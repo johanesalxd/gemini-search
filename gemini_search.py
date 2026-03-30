@@ -3,13 +3,13 @@
 gemini_search.py — Google Search via Gemini Grounding API
 Official Google web index, no scraping. Returns synthesized answer + raw source URLs.
 
-Usage (must run from project directory):
-  cd ~/gemini-search && uv run gemini_search.py search "query"
-  cd ~/gemini-search && uv run gemini_search.py search "query" --raw-urls   # sources only, no synthesis
-  cd ~/gemini-search && uv run gemini_search.py search "query" --json       # full JSON output
-  cd ~/gemini-search && uv run gemini_search.py search "query" --model gemini-3-flash-preview
+Usage:
+  uv run gemini_search.py search "query"
+  uv run gemini_search.py search "query" --raw-urls   # sources only, no synthesis
+  uv run gemini_search.py search "query" --json       # full JSON output
+  uv run gemini_search.py search "query" --model gemini-3-flash-preview
 
-Env: GOOGLE_API_KEY (required) — set in ~/clawd/.secrets/vader.env
+Env: GOOGLE_API_KEY (required)
 """
 
 import os
@@ -21,16 +21,7 @@ import argparse
 def get_api_key():
     key = os.environ.get("GOOGLE_API_KEY")
     if not key:
-        env_path = os.path.expanduser("~/clawd/.secrets/vader.env")
-        if os.path.exists(env_path):
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("GOOGLE_API_KEY="):
-                        key = line.split("=", 1)[1].strip().strip('"')
-                        break
-    if not key:
-        print("ERROR: GOOGLE_API_KEY not found in env or vader.env", file=sys.stderr)
+        print("ERROR: GOOGLE_API_KEY environment variable not set", file=sys.stderr)
         sys.exit(1)
     return key
 
