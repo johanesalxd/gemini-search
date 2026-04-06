@@ -1,6 +1,6 @@
 ---
 name: gemini-search
-description: "Google Search via Gemini Grounding API — official Google web index, AI-synthesized answer + source URLs. Use for: factual queries needing current Google data with citations, breaking news synthesis, queries where source attribution matters. NOT for: raw Google rankings, non-synthesis research."
+description: "Google Search via Gemini Grounding API — official Google web index, AI-synthesized answer + source URLs. Use for: factual queries needing current Google data with citations, breaking news synthesis, queries where source attribution matters. NOT for: raw Google rankings (use Serper), non-synthesis research (use Brave/Exa)."
 ---
 
 # gemini-search — Google Search via Gemini Grounding API
@@ -34,8 +34,11 @@ uv run gemini_search.py search "query" --model gemini-3.1-pro-preview
 - **ANSWER** — synthesized response grounded in Google's current web index
 - **SOURCES** — source sites (title + proxied redirect URL)
 
+## Parallel Execution
+
+Latency: **15-25s**. In parallel blocks, use `yieldMs: 30000` minimum.
+
 ## Gotchas
 
 - **Gemini may not search.** Use explicit phrasing like "today", "current", "latest" to force grounding — otherwise it answers from training data.
-- **Source URLs are proxied redirects** via `vertexaisearch.cloud.google.com`. Titles are reliable; URLs need redirect-following for actual destinations.
-- **Latency: 15-25s.** Account for this in any parallel execution setup.
+- **Source URLs are proxied redirects** via `vertexaisearch.cloud.google.com/grounding-api-redirect/...`. Titles are reliable; URLs need redirect-following for actual destinations.

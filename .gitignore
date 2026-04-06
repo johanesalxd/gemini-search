@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local tool and shell files
+.opencode/
+.python-version
+.mise.toml
+
+# Local OS files
+.DS_Store
