@@ -18,6 +18,7 @@ def test_main_dispatch_search(mocker):
         model=gemini_search._DEFAULT_SEARCH_MODEL,
         raw_urls=False,
         as_json=False,
+        file_path=None,
     )
 
 
@@ -32,6 +33,7 @@ def test_main_dispatch_deep_research(mocker):
         "my topic",
         agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
         as_json=False,
+        file_path=None,
     )
 
 
@@ -67,6 +69,7 @@ def test_main_passes_model_to_search(mocker):
         model="gemini-3.1-pro-preview",
         raw_urls=False,
         as_json=False,
+        file_path=None,
     )
 
 
@@ -80,7 +83,12 @@ def test_main_passes_agent_to_deep_research(mocker):
 
     gemini_search.main()
 
-    mock_dr.assert_called_once_with("q", agent="custom-agent-id", as_json=False)
+    mock_dr.assert_called_once_with(
+        "q",
+        agent="custom-agent-id",
+        as_json=False,
+        file_path=None,
+    )
 
 
 def test_main_invalid_command(mocker):
@@ -91,3 +99,40 @@ def test_main_invalid_command(mocker):
         gemini_search.main()
 
     assert exc.value.code != 0
+
+
+def test_main_passes_file_to_search(mocker):
+    """main() forwards --file to search() as file_path."""
+    mock_search = mocker.patch("gemini_search.search")
+    mocker.patch(
+        "sys.argv",
+        ["gemini_search.py", "search", "q", "--file", "/tmp/notes.md"],
+    )
+
+    gemini_search.main()
+
+    mock_search.assert_called_once_with(
+        "q",
+        model=gemini_search._DEFAULT_SEARCH_MODEL,
+        raw_urls=False,
+        as_json=False,
+        file_path="/tmp/notes.md",
+    )
+
+
+def test_main_passes_file_to_deep_research(mocker):
+    """main() forwards --file to deep_research() as file_path."""
+    mock_dr = mocker.patch("gemini_search.deep_research")
+    mocker.patch(
+        "sys.argv",
+        ["gemini_search.py", "deep-research", "q", "--file", "/tmp/brief.txt"],
+    )
+
+    gemini_search.main()
+
+    mock_dr.assert_called_once_with(
+        "q",
+        agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
+        as_json=False,
+        file_path="/tmp/brief.txt",
+    )

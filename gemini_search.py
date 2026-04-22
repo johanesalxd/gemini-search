@@ -8,16 +8,31 @@ Usage:
   uv run gemini_search.py search "query" --raw-urls   # sources only, no synthesis
   uv run gemini_search.py search "query" --json       # full JSON output
   uv run gemini_search.py search "query" --model gemini-3-flash-preview
+  uv run gemini_search.py search "query" --file ./notes.md
+  uv run gemini_search.py search "summarize this" --file ./report.pdf
 
   uv run gemini_search.py deep-research "query"
   uv run gemini_search.py deep-research "query" --json
-  uv run gemini_search.py deep-research "query" --agent deep-research-pro-preview-12-2025
+  uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2026
+  uv run gemini_search.py deep-research "query" --agent deep-research-max-preview-04-2026
+  uv run gemini_search.py deep-research "what does this say about X?" --file ./brief.md
+  uv run gemini_search.py deep-research "research based on this report" --file ./report.pdf
+  uv run gemini_search.py deep-research "analyze this diagram" --file ./chart.png
 
 Env: GOOGLE_API_KEY (required)
+
+File input support:
+  search:        text files (.txt, .md, etc.) and PDF (<=20 MB) via Part.from_bytes
+  deep-research: text files (inline string prepend); PDF and images via Files API
+                 upload (client.files.upload) → typed typed document/image input list.
+                 Audio and video are supported by the underlying agent API but are
+                 deferred from the CLI (impractical for research workflows).
 """
 
 import json
+import mimetypes
 import os
+import pathlib
 import sys
 import time
 import warnings
@@ -42,16 +57,163 @@ def _make_client(key: str):
     return genai.Client(api_key=key)
 
 
-def _run_search(query: str, model: str, client) -> dict:
+def _detect_mime(path: pathlib.Path) -> str:
+    """Return best-guess MIME type for path. Unknown types become octet-stream."""
+    mime, _ = mimetypes.guess_type(str(path))
+    return mime or "application/octet-stream"
+
+
+def _is_text_file(path: pathlib.Path) -> bool:
+    """Return True if path is a known text-type file."""
+    mime = _detect_mime(path)
+    return mime.startswith("text/")
+
+
+def _build_search_contents(query: str, file_path: str | None):
+    """Build the contents argument for generate_content.
+
+    Args:
+        query: The user query string.
+        file_path: Optional path to a local file to include as context.
+
+    Returns:
+        A string (no file) or list of Parts/strings (with file).
+    """
+    if not file_path:
+        return query
+
+    from google.genai import types
+
+    path = pathlib.Path(file_path)
+    if not path.exists():
+        print(f"ERROR: --file path does not exist: {file_path}", file=sys.stderr)
+        sys.exit(1)
+
+    mime = _detect_mime(path)
+    if mime == "application/pdf":
+        data = path.read_bytes()
+        return [types.Part.from_bytes(data=data, mime_type="application/pdf"), query]
+    else:
+        # text/markdown/plain or any text file: read as string and prepend
+        text = path.read_text(encoding="utf-8")
+        return [text, query]
+
+
+def _build_dr_input(query: str, file_path: str | None) -> str:
+    """Build the input string for text files or no-file case.
+
+    Text files are prepended as inline content. For PDF and image files,
+    use _build_dr_multimodal_input instead (called from _run_deep_research).
+    Any other binary type falls back to a warning + bare query.
+
+    Args:
+        query: The user query string.
+        file_path: Optional path to a local file to include as context.
+
+    Returns:
+        A string combining file content (if text) and the query.
+    """
+    if not file_path:
+        return query
+
+    path = pathlib.Path(file_path)
+    if not path.exists():
+        print(f"ERROR: --file path does not exist: {file_path}", file=sys.stderr)
+        sys.exit(1)
+
+    if _is_text_file(path):
+        content = path.read_text(encoding="utf-8")
+        return f"[Document: {path.name}]\n\n{content}\n\n---\n\n{query}"
+    else:
+        # Defensive fallback for unsupported binary types called directly.
+        # PDF and image/* are handled via _build_dr_multimodal_input in _run_deep_research.
+        print(
+            "WARNING: --file with this binary type is not supported for deep-research; "
+            "passing query only.",
+            file=sys.stderr,
+        )
+        return query
+
+
+def _build_dr_multimodal_input(
+    query: str,
+    path: pathlib.Path,
+    client,
+    *,
+    _upload_wait_seconds: int = 60,
+) -> list:
+    """Upload a local file to the Files API and return a typed input list.
+
+    Supports PDF (document type) and images (image type). The file is uploaded
+    to the Files API, polled until ACTIVE, then referenced by URI in the
+    typed input list accepted by client.interactions.create.
+
+    Args:
+        query: The user query string.
+        path: Local file path (must exist).
+        client: Authenticated genai.Client.
+        _upload_wait_seconds: Maximum seconds to wait for file to become ACTIVE.
+
+    Returns:
+        List of typed content dicts for the Interactions API.
+
+    Raises:
+        SystemExit: On upload failure or timeout.
+    """
+    mime = _detect_mime(path)
+    if mime == "application/pdf":
+        input_type = "document"
+    elif mime.startswith("image/"):
+        input_type = "image"
+    else:
+        print(
+            f"ERROR: _build_dr_multimodal_input called with unsupported MIME {mime}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        # Pass mime_type explicitly via config to avoid relying on SDK inference,
+        # ensuring the upload MIME matches the typed input dict MIME.
+        # SDK signature: files.upload(*, file, config: UploadFileConfig | None)
+        file_obj = client.files.upload(file=str(path), config={"mime_type": mime})
+
+        waited = 0
+        while True:
+            state = client.files.get(name=file_obj.name).state
+            # state may be enum or string depending on SDK version
+            state_str = state.name if hasattr(state, "name") else str(state)
+            if state_str == "ACTIVE":
+                break
+            if waited >= _upload_wait_seconds:
+                raise RuntimeError(
+                    f"File did not become ACTIVE within {_upload_wait_seconds}s"
+                )
+            time.sleep(2)
+            waited += 2
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"ERROR: Failed to upload --file for deep-research: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    return [
+        {"type": "text", "text": query},
+        {"type": input_type, "uri": file_obj.uri, "mime_type": mime},
+    ]
+
+
+def _run_search(query: str, model: str, client, file_path: str | None = None) -> dict:
     from google.genai import types
 
     grounding_tool = types.Tool(google_search=types.GoogleSearch())
     config = types.GenerateContentConfig(tools=[grounding_tool])
+    contents = _build_search_contents(query, file_path)
 
     try:
         response = client.models.generate_content(
             model=model,
-            contents=query,
+            contents=contents,
             config=config,
         )
     except Exception as e:
@@ -85,10 +247,16 @@ def _run_search(query: str, model: str, client) -> dict:
     }
 
 
-def search(query: str, model: str = _DEFAULT_SEARCH_MODEL, raw_urls: bool = False, as_json: bool = False) -> None:
+def search(
+    query: str,
+    model: str = _DEFAULT_SEARCH_MODEL,
+    raw_urls: bool = False,
+    as_json: bool = False,
+    file_path: str | None = None,
+) -> None:
     key = get_api_key()
     client = _make_client(key)
-    result = _run_search(query, model, client)
+    result = _run_search(query, model, client, file_path=file_path)
 
     if as_json:
         print(json.dumps(result, indent=2))
@@ -122,7 +290,30 @@ def search(query: str, model: str = _DEFAULT_SEARCH_MODEL, raw_urls: bool = Fals
         print("=== SOURCES: none returned ===")
 
 
-def _run_deep_research(query: str, agent: str, client) -> dict:
+def _run_deep_research(
+    query: str, agent: str, client, file_path: str | None = None
+) -> dict:
+    # Dispatch input construction based on file type.
+    if not file_path:
+        dr_input: str | list = query
+    else:
+        path = pathlib.Path(file_path)
+        if not path.exists():
+            print(f"ERROR: --file path does not exist: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        mime = _detect_mime(path)
+        if mime.startswith("text/"):
+            dr_input = _build_dr_input(query, file_path)
+        elif mime == "application/pdf" or mime.startswith("image/"):
+            dr_input = _build_dr_multimodal_input(query, path, client)
+        else:
+            print(
+                f"WARNING: --file with {mime} is not supported for deep-research; "
+                "passing query only.",
+                file=sys.stderr,
+            )
+            dr_input = query
+
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -132,7 +323,7 @@ def _run_deep_research(query: str, agent: str, client) -> dict:
             )
             interaction = client.interactions.create(
                 agent=agent,
-                input=query,
+                input=dr_input,
                 background=True,
             )
 
@@ -169,12 +360,31 @@ def _run_deep_research(query: str, agent: str, client) -> dict:
             text = getattr(content, "text", None)
             if text:
                 answer += text
-            # Annotations carry inline citation URLs; add as sources.
+            # TextContent.annotations is documented in the Interactions API
+            # reference (ai.google.dev/api/interactions-api, TextContent section):
+            #   annotations: Annotation (optional) — citation info for model-generated
+            #   content. Polymorphic on `type`. UrlCitation (type="url_citation") has
+            #   .url, .title, .start_index, .end_index. This matches the canonical
+            #   Python handling example in the interactions docs (URL context section):
+            #     for annotation in output.annotations:
+            #         if annotation.get("type") == "url_citation":
+            #             print(annotation["url"])
+            # Deep Research can surface url_citation annotations for cited URLs.
+            # appear in practice. The SDK may deserialize them as dicts or objects
+            # depending on version; handle both defensively.
             for ann in getattr(content, "annotations", None) or []:
-                url = getattr(ann, "source", None) or ""
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    sources.append({"title": url, "url": url})
+                # SDK object path
+                ann_type = getattr(ann, "type", None)
+                if ann_type is None and isinstance(ann, dict):
+                    ann_type = ann.get("type")
+                if ann_type == "url_citation":
+                    url = (getattr(ann, "url", None) or
+                           (ann.get("url") if isinstance(ann, dict) else None) or "")
+                    title = (getattr(ann, "title", None) or
+                             (ann.get("title") if isinstance(ann, dict) else None) or url)
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        sources.append({"title": title, "url": url})
 
         elif content_type == "google_search_result":
             # Each result item has .title and .url.
@@ -195,14 +405,19 @@ def _run_deep_research(query: str, agent: str, client) -> dict:
     }
 
 
-def deep_research(query: str, agent: str = _DEFAULT_DEEP_RESEARCH_AGENT, as_json: bool = False) -> None:
+def deep_research(
+    query: str,
+    agent: str = _DEFAULT_DEEP_RESEARCH_AGENT,
+    as_json: bool = False,
+    file_path: str | None = None,
+) -> None:
     print(
         "Deep Research in progress — this may take 1–3 minutes...",
         file=sys.stderr,
     )
     key = get_api_key()
     client = _make_client(key)
-    result = _run_deep_research(query, agent, client)
+    result = _run_deep_research(query, agent, client, file_path=file_path)
 
     if as_json:
         print(json.dumps(result, indent=2))
@@ -246,7 +461,11 @@ def main() -> None:
     parser.add_argument(
         "--agent",
         default=_DEFAULT_DEEP_RESEARCH_AGENT,
-        help=f"Agent identifier for deep-research (default: {_DEFAULT_DEEP_RESEARCH_AGENT}). Ignored for search.",
+        help=(
+            f"Agent identifier for deep-research (default: {_DEFAULT_DEEP_RESEARCH_AGENT}). "
+            "Current doc-backed options include deep-research-preview-04-2026 and "
+            "deep-research-max-preview-04-2026. Ignored for search."
+        ),
     )
     parser.add_argument(
         "--raw-urls",
@@ -254,17 +473,39 @@ def main() -> None:
         help="Return source URLs only — search mode only, not supported for deep-research.",
     )
     parser.add_argument("--json", action="store_true", help="Full JSON output")
+    parser.add_argument(
+        "--file",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a local file to include as context for the query. "
+            "search: supports text files and PDF (<=20 MB, inline bytes). "
+            "deep-research: supports text files (inline), PDF and images (Files API upload). "
+            "Unsupported types emit a warning and are skipped."
+        ),
+    )
     args = parser.parse_args()
 
     if args.command == "search":
-        search(args.query, model=args.model, raw_urls=args.raw_urls, as_json=args.json)
+        search(
+            args.query,
+            model=args.model,
+            raw_urls=args.raw_urls,
+            as_json=args.json,
+            file_path=args.file,
+        )
     elif args.command == "deep-research":
         if args.raw_urls:
             print(
                 "WARNING: --raw-urls is not supported for deep-research; ignoring.",
                 file=sys.stderr,
             )
-        deep_research(args.query, agent=args.agent, as_json=args.json)
+        deep_research(
+            args.query,
+            agent=args.agent,
+            as_json=args.json,
+            file_path=args.file,
+        )
 
 
 if __name__ == "__main__":
