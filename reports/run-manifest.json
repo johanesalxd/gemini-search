@@ -1,0 +1,17 @@
+{
+  "task": "add deep-research mode to gemini-search",
+  "branch": "feat/deep-research-mode",
+  "status": "ready_for_review",
+  "verification": {
+    "tests": [
+      {
+        "command": "uv run pytest tests/ -q",
+        "result": "17 passed in 0.35s"
+      }
+    ]
+  },
+  "artifacts": [
+    ".opencode/artifacts/build-deep-research-2026-04-22.md",
+    ".opencode/artifacts/explore-deep-research-postbuild-2026-04-22.md"
+  ]
+}

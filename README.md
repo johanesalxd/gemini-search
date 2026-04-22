@@ -1,8 +1,10 @@
 # gemini-search
 
-Google Search via Gemini Grounding API — official Google web index, AI-synthesized answer + source URLs.
+Google Search via Gemini Grounding API + Deep Research — official Google web index, AI-synthesized answer + source URLs.
 
-Instead of scraping or using a search API directly, this tool uses Gemini's `google_search` grounding tool to fire real Google searches and synthesize results into a natural-language answer with cited sources.
+Two modes:
+- **`search`** — fast grounded synthesis (15–25 s), uses Gemini `google_search` tool
+- **`deep-research`** — thorough multi-step research report (1–3 min), uses Gemini Interactions API
 
 ## Prerequisites
 
@@ -20,6 +22,8 @@ uv sync
 
 ## Usage
 
+### search — fast grounded synthesis
+
 ```bash
 # Full output (synthesized answer + sources)
 uv run gemini_search.py search "latest AI news"
@@ -30,15 +34,65 @@ uv run gemini_search.py search "query" --raw-urls
 # JSON output
 uv run gemini_search.py search "query" --json
 
-# Use Pro model (default: gemini-3-flash-preview)
-uv run gemini_search.py search "query" --model gemini-3.1-pro-preview
+# Use a different search model
+uv run gemini_search.py search "query" --model gemini-3-flash-preview
 ```
 
-## Output
+### deep-research — thorough multi-step research report
 
-- **ANSWER** — synthesized response grounded in Google's current web index
-- **Google queries fired** — what Gemini actually searched
-- **SOURCES** — source sites with titles and URLs
+```bash
+# Full output (research report + sources)
+uv run gemini_search.py deep-research "impact of CRISPR on hereditary disease treatment"
+
+# JSON output
+uv run gemini_search.py deep-research "query" --json
+
+# Custom agent (default: deep-research-preview-04-2026)
+uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2026
+```
+
+> **Note:** Deep Research is a blocking call that takes **1–3 minutes** to complete. A progress notice is printed to stderr at the start.
+
+## When to use search vs deep-research
+
+| | search | deep-research |
+|---|---|---|
+| Latency | 15–25 s | 1–3 min |
+| Output | Synthesized paragraph + sources | Multi-section research report + sources |
+| Use case | Current facts, news, quick lookups | In-depth research, complex topics |
+| `--raw-urls` | Supported | Not supported |
+| Cost | Lower | Higher |
+
+## Output schemas
+
+### search --json
+
+```json
+{
+  "query": "...",
+  "model": "gemini-3-flash-preview",
+  "search_queries_used": ["..."],
+  "answer": "...",
+  "sources": [{"title": "...", "url": "..."}]
+}
+```
+
+### deep-research --json
+
+```json
+{
+  "query": "...",
+  "agent": "deep-research-preview-04-2026",
+  "interaction_id": "...",
+  "status": "completed",
+  "answer": "...",
+  "sources": [{"title": "...", "url": "..."}]
+}
+```
+
+Note: `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
+
+Deep Research runs asynchronously under the hood with `background=True` and polls until completion.
 
 ## Agent Skill
 
@@ -53,7 +107,6 @@ npx skills add johanesalxd/gemini-search
 ### Manual install
 
 ```bash
-# Copy to your agent's skills directory
 cp SKILL.md ~/.claude/skills/gemini-search/SKILL.md         # Claude Code
 cp SKILL.md .cursor/skills/gemini-search/SKILL.md           # Cursor
 cp SKILL.md .opencode/skills/gemini-search/SKILL.md         # OpenCode
