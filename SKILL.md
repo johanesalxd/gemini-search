@@ -7,7 +7,7 @@ description: "Google Search via Gemini Grounding API + Deep Research. Two modes:
 
 Two modes backed by separate Google APIs:
 - **`search`** — Gemini `google_search` grounding tool. Fast, single-turn, synthesized answer + sources.
-- **`deep-research`** — Gemini Interactions API (`client.interactions.create`). Multi-step research, thorough report, 1–3 min latency.
+- **`deep-research`** — Gemini Interactions API (`client.interactions.create` + `background=True` polling via `client.interactions.get`). Multi-step research, thorough report, 1–3 min latency.
 
 ## Auth
 
@@ -86,4 +86,4 @@ Note: `search_queries_used` is absent from deep-research output. Do not parse bo
 - **search: Source URLs are proxied redirects** via `vertexaisearch.cloud.google.com/grounding-api-redirect/...`. Titles are reliable; URLs need redirect-following for actual destinations.
 - **deep-research: `--raw-urls` is not supported.** Passing it emits a warning and is ignored.
 - **deep-research: `--model` is ignored.** The agent identifier (`--agent`) drives the backend, not a model name.
-- **deep-research API is experimental.** `client.interactions` carries a `UserWarning` from the SDK; the tool suppresses it internally. The API surface may change in future SDK versions.
+- **deep-research API is experimental.** `client.interactions` carries a `UserWarning` from the SDK; the tool suppresses the specific experimental warning internally. The API surface may change in future SDK versions.

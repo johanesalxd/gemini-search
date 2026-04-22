@@ -47,8 +47,8 @@ uv run gemini_search.py deep-research "impact of CRISPR on hereditary disease tr
 # JSON output
 uv run gemini_search.py deep-research "query" --json
 
-# Custom agent (default: deep-research-pro-preview-12-2025)
-uv run gemini_search.py deep-research "query" --agent deep-research-pro-preview-12-2025
+# Custom agent (default: deep-research-preview-04-2026)
+uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2026
 ```
 
 > **Note:** Deep Research is a blocking call that takes **1–3 minutes** to complete. A progress notice is printed to stderr at the start.
@@ -82,7 +82,7 @@ uv run gemini_search.py deep-research "query" --agent deep-research-pro-preview-
 ```json
 {
   "query": "...",
-  "agent": "deep-research-pro-preview-12-2025",
+  "agent": "deep-research-preview-04-2026",
   "interaction_id": "...",
   "status": "completed",
   "answer": "...",
@@ -91,6 +91,8 @@ uv run gemini_search.py deep-research "query" --agent deep-research-pro-preview-
 ```
 
 Note: `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
+
+Deep Research runs asynchronously under the hood with `background=True` and polls until completion.
 
 ## Agent Skill
 

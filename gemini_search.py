@@ -19,11 +19,13 @@ Env: GOOGLE_API_KEY (required)
 import json
 import os
 import sys
+import time
 import warnings
 import argparse
 
 _DEFAULT_SEARCH_MODEL = "gemini-3-flash-preview"
-_DEFAULT_DEEP_RESEARCH_AGENT = "deep-research-pro-preview-12-2025"
+_DEFAULT_DEEP_RESEARCH_AGENT = "deep-research-preview-04-2026"
+_DEEP_RESEARCH_POLL_INTERVAL_SECONDS = 5
 
 
 def get_api_key() -> str:
@@ -131,30 +133,57 @@ def _run_deep_research(query: str, agent: str, client) -> dict:
             interaction = client.interactions.create(
                 agent=agent,
                 input=query,
+                background=True,
             )
+
+            while interaction.status == "in_progress":
+                time.sleep(_DEEP_RESEARCH_POLL_INTERVAL_SECONDS)
+                interaction = client.interactions.get(interaction.id)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
+    if interaction.status != "completed":
+        print(
+            f"ERROR: Deep Research interaction ended with status '{interaction.status}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     answer = ""
     sources = []
+    seen_urls: set[str] = set()
 
     for content in interaction.outputs or []:
-        # Text parts contain the synthesized research report
-        if hasattr(content, "parts"):
-            for part in content.parts or []:
-                if hasattr(part, "text") and part.text:
-                    answer += part.text
-                # GoogleSearchResultContent items carry source URLs
-                if hasattr(part, "result") and part.result:
-                    for result_item in part.result:
-                        entry = {}
-                        if hasattr(result_item, "title"):
-                            entry["title"] = result_item.title or ""
-                        if hasattr(result_item, "url"):
-                            entry["url"] = result_item.url or ""
-                        if entry:
-                            sources.append(entry)
+        # interaction.outputs contains discriminated-union content items, each
+        # with a `type` field. The two types relevant here are:
+        #   - "text"                 → TextContent: has .text (str) and
+        #                              optional .annotations (citation sources)
+        #   - "google_search_result" → GoogleSearchResultContent: has
+        #                              .result (List[GoogleSearchResult]), each
+        #                              with .title, .url, .rendered_content
+        content_type = getattr(content, "type", None)
+
+        if content_type == "text":
+            # Accumulate the synthesized research report text.
+            text = getattr(content, "text", None)
+            if text:
+                answer += text
+            # Annotations carry inline citation URLs; add as sources.
+            for ann in getattr(content, "annotations", None) or []:
+                url = getattr(ann, "source", None) or ""
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    sources.append({"title": url, "url": url})
+
+        elif content_type == "google_search_result":
+            # Each result item has .title and .url.
+            for result_item in getattr(content, "result", None) or []:
+                url = getattr(result_item, "url", None) or ""
+                title = getattr(result_item, "title", None) or url
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    sources.append({"title": title, "url": url})
 
     return {
         "query": query,
