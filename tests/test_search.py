@@ -1,6 +1,7 @@
-"""Tests for the search path: _run_search() and search() output modes."""
+"""Tests for the search path: _run_search(), _build_search_contents(), and search() output modes."""
 
 import json
+import pathlib
 import sys
 import pytest
 
@@ -143,3 +144,96 @@ def test_get_api_key_missing(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         gemini_search.get_api_key()
     assert exc.value.code == 1
+
+
+# --- _build_search_contents tests ---
+
+def test_build_search_contents_no_file():
+    """_build_search_contents returns bare query string when no file given."""
+    result = gemini_search._build_search_contents("my query", None)
+    assert result == "my query"
+
+
+def test_build_search_contents_text_file(tmp_path, mocker):
+    """_build_search_contents returns [file_text, query] list for text files."""
+    txt = tmp_path / "notes.txt"
+    txt.write_text("This is note content.", encoding="utf-8")
+
+    # Mock Part.from_bytes so we do not need the real SDK
+    mocker.patch("google.genai.types.Part.from_bytes")
+
+    result = gemini_search._build_search_contents("my query", str(txt))
+
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[0] == "This is note content."
+    assert result[1] == "my query"
+
+
+def test_build_search_contents_markdown_file(tmp_path, mocker):
+    """_build_search_contents handles .md files as text (inline string)."""
+    md = tmp_path / "brief.md"
+    md.write_text("# Brief\n\nContent here.", encoding="utf-8")
+
+    mocker.patch("google.genai.types.Part.from_bytes")
+
+    result = gemini_search._build_search_contents("summarize", str(md))
+
+    assert isinstance(result, list)
+    assert result[0] == "# Brief\n\nContent here."
+    assert result[1] == "summarize"
+
+
+def test_build_search_contents_pdf_file(tmp_path, mocker):
+    """_build_search_contents uses Part.from_bytes for PDF files."""
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake pdf bytes")
+
+    fake_part = object()
+    mock_from_bytes = mocker.patch("google.genai.types.Part.from_bytes", return_value=fake_part)
+
+    result = gemini_search._build_search_contents("summarize", str(pdf))
+
+    mock_from_bytes.assert_called_once_with(
+        data=b"%PDF-1.4 fake pdf bytes", mime_type="application/pdf"
+    )
+    assert isinstance(result, list)
+    assert result[0] is fake_part
+    assert result[1] == "summarize"
+
+
+def test_detect_mime_unknown_file_defaults_to_octet_stream(tmp_path):
+    """Unknown file types default to octet-stream, not text/plain."""
+    blob = tmp_path / "payload.unknownbin"
+    blob.write_bytes(b"\x00\x01\x02")
+
+    assert gemini_search._detect_mime(blob) == "application/octet-stream"
+
+
+def test_build_search_contents_missing_file():
+    """_build_search_contents exits with error when file does not exist."""
+    with pytest.raises(SystemExit) as exc:
+        gemini_search._build_search_contents("query", "/nonexistent/path/file.txt")
+    assert exc.value.code == 1
+
+
+def test_run_search_passes_file_contents_to_api(tmp_path, mocker):
+    """_run_search forwards --file contents to generate_content."""
+    txt = tmp_path / "context.txt"
+    txt.write_text("Context about dolphins.", encoding="utf-8")
+
+    mock_client = mocker.MagicMock()
+    mock_client.models.generate_content.return_value = _make_mock_response(
+        text="Dolphin answer",
+        search_queries=["dolphins"],
+        sources=[],
+    )
+    # Stub Part.from_bytes (not needed for text files but defensive)
+    mocker.patch("google.genai.types.Part.from_bytes")
+
+    result = gemini_search._run_search("tell me about dolphins", "model", mock_client, file_path=str(txt))
+
+    # The API was called with a list [file_text, query], not a bare string
+    call_args = mock_client.models.generate_content.call_args
+    assert call_args.kwargs["contents"] == ["Context about dolphins.", "tell me about dolphins"]
+    assert result["query"] == "tell me about dolphins"

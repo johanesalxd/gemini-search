@@ -36,6 +36,10 @@ uv run gemini_search.py search "query" --json
 
 # Use a different search model
 uv run gemini_search.py search "query" --model gemini-3-flash-preview
+
+# Attach a local file as context (text or PDF)
+uv run gemini_search.py search "summarize the key points" --file ./notes.md
+uv run gemini_search.py search "what risks does this report identify?" --file ./report.pdf
 ```
 
 ### deep-research — thorough multi-step research report
@@ -49,9 +53,40 @@ uv run gemini_search.py deep-research "query" --json
 
 # Custom agent (default: deep-research-preview-04-2026)
 uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2026
+
+# More exhaustive Deep Research agent
+uv run gemini_search.py deep-research "query" --agent deep-research-max-preview-04-2026
+
+# Attach a text file as a research brief (inline prepend)
+uv run gemini_search.py deep-research "conduct research based on this brief" --file ./brief.md
+
+# Attach a PDF document (uploaded via Files API)
+uv run gemini_search.py deep-research "summarize and expand on this report" --file ./report.pdf
+
+# Attach an image (uploaded via Files API)
+uv run gemini_search.py deep-research "research the topic shown in this diagram" --file ./chart.png
 ```
 
 > **Note:** Deep Research is a blocking call that takes **1–3 minutes** to complete. A progress notice is printed to stderr at the start.
+
+## File input — `--file`
+
+Both modes accept `--file <path>` to attach a local file as context for the query.
+
+| File type | `search` | `deep-research` |
+|---|---|---|
+| `.txt`, `.md`, any `text/*` | Supported — inline string prepended to query | Supported — inline string prepended to query |
+| `.pdf` | Supported — inline `Part.from_bytes` multipart | Supported — Files API upload → typed `document` input |
+| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported — Files API upload → typed `image` input |
+| Audio, Video | Not a primary use case | Not implemented in CLI (underlying agent supports them; deferred) |
+| Other binary | Not a primary use case | Warning emitted, query runs without file |
+
+**Notes:**
+- `query` remains required even when `--file` is given. The query is the instruction to apply to the file (e.g., "summarize this", "what risks does this identify?").
+- PDF and image inputs for `deep-research` are uploaded to the Gemini Files API (`client.files.upload`), polled until `ACTIVE`, then passed as a typed content list to `client.interactions.create`. No local size limit applies (Files API handles large files).
+- Audio and video are supported by the underlying Deep Research agent API but are not implemented in the CLI (impractical for typical research workflows).
+- Current Google Deep Research capabilities such as collaborative planning, visualization, streaming, follow-up interactions, and richer tool configuration belong to the underlying API surface; this CLI currently exposes the core research flow plus `--agent` and `--file`, not the full API control surface.
+- File content is context only. The `query` field in JSON output reflects the original query string, not the file content.
 
 ## When to use search vs deep-research
 
@@ -61,6 +96,9 @@ uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2
 | Output | Synthesized paragraph + sources | Multi-section research report + sources |
 | Use case | Current facts, news, quick lookups | In-depth research, complex topics |
 | `--raw-urls` | Supported | Not supported |
+| `--file` text | Supported | Supported |
+| `--file` PDF | Supported (inline multipart) | Supported (Files API upload) |
+| `--file` image | Not a primary use case | Supported (Files API upload) |
 | Cost | Lower | Higher |
 
 ## Output schemas
@@ -93,6 +131,8 @@ uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2
 Note: `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
 
 Deep Research runs asynchronously under the hood with `background=True` and polls until completion.
+
+Deep Research citations may appear inline in the `answer` text (for example as markdown links), and `sources` can still be empty on some valid runs. This is expected API behavior, not a parsing bug.
 
 ## Agent Skill
 
