@@ -65,6 +65,9 @@ uv run gemini_search.py deep-research "summarize and expand on this report" --fi
 
 # Attach an image (uploaded via Files API)
 uv run gemini_search.py deep-research "research the topic shown in this diagram" --file ./chart.png
+
+# Continue from a prior deep-research run (follow-up question)
+uv run gemini_search.py deep-research "what are the regulatory implications?" --previous-interaction-id ia-abc123
 ```
 
 > **Note:** Deep Research is a blocking call that takes **1–3 minutes** to complete. A progress notice is printed to stderr at the start.
@@ -85,7 +88,7 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 - `query` remains required even when `--file` is given. The query is the instruction to apply to the file (e.g., "summarize this", "what risks does this identify?").
 - PDF and image inputs for `deep-research` are uploaded to the Gemini Files API (`client.files.upload`), polled until `ACTIVE`, then passed as a typed content list to `client.interactions.create`. No local size limit applies (Files API handles large files).
 - Audio and video are supported by the underlying Deep Research agent API but are not implemented in the CLI (impractical for typical research workflows).
-- Current Google Deep Research capabilities such as collaborative planning, visualization, streaming, follow-up interactions, and richer tool configuration belong to the underlying API surface; this CLI currently exposes the core research flow plus `--agent` and `--file`, not the full API control surface.
+- To continue a prior Deep Research session, pass `--previous-interaction-id <id>` using the `interaction_id` from a previous run. This sends the follow-up as a stateful continuation turn via the `previous_interaction_id` field in the Interactions API. The result includes a new `interaction_id` for chaining further follow-ups.
 - File content is context only. The `query` field in JSON output reflects the original query string, not the file content.
 
 ## When to use search vs deep-research
@@ -125,6 +128,14 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
   "status": "completed",
   "answer": "...",
   "sources": [{"title": "...", "url": "..."}]
+}
+```
+
+When `--previous-interaction-id` is provided, the output also includes:
+
+```json
+{
+  "previous_interaction_id": "ia-prior-abc123"
 }
 ```
 

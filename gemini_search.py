@@ -18,6 +18,7 @@ Usage:
   uv run gemini_search.py deep-research "what does this say about X?" --file ./brief.md
   uv run gemini_search.py deep-research "research based on this report" --file ./report.pdf
   uv run gemini_search.py deep-research "analyze this diagram" --file ./chart.png
+  uv run gemini_search.py deep-research "follow-up question" --previous-interaction-id <id>
 
 Env: GOOGLE_API_KEY (required)
 
@@ -27,6 +28,11 @@ File input support:
                  upload (client.files.upload) → typed typed document/image input list.
                  Audio and video are supported by the underlying agent API but are
                  deferred from the CLI (impractical for research workflows).
+
+Continuation (deep-research only):
+  Pass --previous-interaction-id <id> to continue from a prior deep-research turn.
+  The interaction_id from a previous run is printed to stdout (and included in --json
+  output). Omit the flag for a fresh (one-shot) research request.
 """
 
 import json
@@ -291,7 +297,11 @@ def search(
 
 
 def _run_deep_research(
-    query: str, agent: str, client, file_path: str | None = None
+    query: str,
+    agent: str,
+    client,
+    file_path: str | None = None,
+    previous_interaction_id: str | None = None,
 ) -> dict:
     # Dispatch input construction based on file type.
     if not file_path:
@@ -314,6 +324,17 @@ def _run_deep_research(
             )
             dr_input = query
 
+    # Build keyword arguments for interactions.create. previous_interaction_id
+    # is the SDK-verified field (confirmed via help(client.interactions.create))
+    # for stateful continuation of a prior Deep Research turn.
+    create_kwargs: dict = {
+        "agent": agent,
+        "input": dr_input,
+        "background": True,
+    }
+    if previous_interaction_id:
+        create_kwargs["previous_interaction_id"] = previous_interaction_id
+
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -321,11 +342,7 @@ def _run_deep_research(
                 message=".*Interactions usage is experimental.*",
                 category=UserWarning,
             )
-            interaction = client.interactions.create(
-                agent=agent,
-                input=dr_input,
-                background=True,
-            )
+            interaction = client.interactions.create(**create_kwargs)
 
             while interaction.status == "in_progress":
                 time.sleep(_DEEP_RESEARCH_POLL_INTERVAL_SECONDS)
@@ -395,7 +412,7 @@ def _run_deep_research(
                     seen_urls.add(url)
                     sources.append({"title": title, "url": url})
 
-    return {
+    result: dict = {
         "query": query,
         "agent": agent,
         "interaction_id": interaction.id,
@@ -403,6 +420,9 @@ def _run_deep_research(
         "answer": answer.strip(),
         "sources": sources,
     }
+    if previous_interaction_id:
+        result["previous_interaction_id"] = previous_interaction_id
+    return result
 
 
 def deep_research(
@@ -410,6 +430,7 @@ def deep_research(
     agent: str = _DEFAULT_DEEP_RESEARCH_AGENT,
     as_json: bool = False,
     file_path: str | None = None,
+    previous_interaction_id: str | None = None,
 ) -> None:
     print(
         "Deep Research in progress — this may take 1–3 minutes...",
@@ -417,7 +438,13 @@ def deep_research(
     )
     key = get_api_key()
     client = _make_client(key)
-    result = _run_deep_research(query, agent, client, file_path=file_path)
+    result = _run_deep_research(
+        query,
+        agent,
+        client,
+        file_path=file_path,
+        previous_interaction_id=previous_interaction_id,
+    )
 
     if as_json:
         print(json.dumps(result, indent=2))
@@ -484,6 +511,17 @@ def main() -> None:
             "Unsupported types emit a warning and are skipped."
         ),
     )
+    parser.add_argument(
+        "--previous-interaction-id",
+        metavar="ID",
+        default=None,
+        help=(
+            "Interaction ID from a prior deep-research run to continue from. "
+            "When provided, the new request is sent as a follow-up turn using the "
+            "previous_interaction_id field in the Interactions API. "
+            "Only valid for deep-research; ignored for search."
+        ),
+    )
     args = parser.parse_args()
 
     if args.command == "search":
@@ -505,6 +543,7 @@ def main() -> None:
             agent=args.agent,
             as_json=args.json,
             file_path=args.file,
+            previous_interaction_id=args.previous_interaction_id,
         )
 
 

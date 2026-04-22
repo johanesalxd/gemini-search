@@ -34,6 +34,7 @@ def test_main_dispatch_deep_research(mocker):
         agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
         as_json=False,
         file_path=None,
+        previous_interaction_id=None,
     )
 
 
@@ -52,6 +53,42 @@ def test_main_rejects_raw_urls_with_deep_research(mocker, capsys):
     assert "--raw-urls" in captured.err
     # deep_research() is still called despite the warning
     mock_dr.assert_called_once()
+
+
+def test_main_passes_previous_interaction_id_to_deep_research(mocker):
+    """main() forwards --previous-interaction-id to deep_research()."""
+    mock_dr = mocker.patch("gemini_search.deep_research")
+    mocker.patch(
+        "sys.argv",
+        [
+            "gemini_search.py",
+            "deep-research",
+            "follow-up question",
+            "--previous-interaction-id",
+            "ia-prior-abc123",
+        ],
+    )
+
+    gemini_search.main()
+
+    mock_dr.assert_called_once_with(
+        "follow-up question",
+        agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
+        as_json=False,
+        file_path=None,
+        previous_interaction_id="ia-prior-abc123",
+    )
+
+
+def test_main_previous_interaction_id_defaults_to_none(mocker):
+    """main() passes previous_interaction_id=None when flag is absent."""
+    mock_dr = mocker.patch("gemini_search.deep_research")
+    mocker.patch("sys.argv", ["gemini_search.py", "deep-research", "fresh query"])
+
+    gemini_search.main()
+
+    call_kwargs = mock_dr.call_args.kwargs
+    assert call_kwargs["previous_interaction_id"] is None
 
 
 def test_main_passes_model_to_search(mocker):
@@ -88,6 +125,7 @@ def test_main_passes_agent_to_deep_research(mocker):
         agent="custom-agent-id",
         as_json=False,
         file_path=None,
+        previous_interaction_id=None,
     )
 
 
@@ -135,4 +173,5 @@ def test_main_passes_file_to_deep_research(mocker):
         agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
         as_json=False,
         file_path="/tmp/brief.txt",
+        previous_interaction_id=None,
     )

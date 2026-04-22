@@ -58,6 +58,10 @@ uv run gemini_search.py deep-research "summarize and expand on this report" --fi
 
 # Attach an image (Files API upload)
 uv run gemini_search.py deep-research "research the topic shown in this diagram" --file ./chart.png
+
+# Continue from a prior deep-research run (follow-up question)
+# Use the interaction_id printed at the end of a previous run
+uv run gemini_search.py deep-research "what are the regulatory implications?" --previous-interaction-id ia-abc123
 ```
 
 > A progress notice is printed to stderr. Do not interpret silence as a hang — the call is blocking and may take up to 3 minutes.
@@ -76,7 +80,7 @@ Both modes accept `--file <path>` to attach a local file as context.
 
 `query` remains required even when `--file` is given — it is the instruction to apply to the file.
 
-Current Google Deep Research capabilities include collaborative planning, visualization, supported tool configuration, streaming, follow-up interactions, and multimodal grounding. This CLI currently exposes the core research flow plus `--agent` and `--file`; it does not yet expose controls such as tool selection, `previous_interaction_id`, visualization settings, or follow-up/continuation workflow.
+This CLI exposes the core research flow plus `--agent`, `--file`, and `--previous-interaction-id`. Other API controls (tool selection, visualization settings, streaming, etc.) are not surfaced.
 
 ## Output
 
@@ -106,6 +110,8 @@ Current Google Deep Research capabilities include collaborative planning, visual
 {"query", "agent", "interaction_id", "status", "answer", "sources"}
 ```
 
+When `--previous-interaction-id` is provided, `"previous_interaction_id"` is also included in the output.
+
 Note: `search_queries_used` is absent from deep-research output. Do not parse both with the same schema.
 
 ## Parallel Execution
@@ -122,6 +128,7 @@ Note: `search_queries_used` is absent from deep-research output. Do not parse bo
 - **deep-research: `--raw-urls` is not supported.** Passing it emits a warning and is ignored.
 - **deep-research: `--model` is ignored.** The agent identifier (`--agent`) drives the backend, not a model name.
 - **deep-research: `--file` supports text, PDF, and images.** Text files are prepended inline. PDF and image files are uploaded to the Gemini Files API, polled until `ACTIVE`, then passed as typed `document`/`image` input to the agent. Audio and video are supported by the underlying agent API but are not implemented in the CLI. Other binary types emit a WARNING and the query runs without the file.
+- **deep-research: `--previous-interaction-id` enables follow-up turns.** Pass the `interaction_id` from a prior run to send a continuation request. The SDK field is `previous_interaction_id` (verified via `help(client.interactions.create)`). The result includes a new `interaction_id` for further chaining. Only valid for `deep-research`; ignored for `search`.
 - **deep-research: citations may be embedded in `answer` text.** The `sources` field can still be `[]` on valid runs, even though the CLI also extracts supported citation/search-result structures when present.
 - **deep-research requires background execution at the API layer.** Current Google docs require `background=True` for Deep Research interactions.
 - **deep-research API is experimental.** `client.interactions` carries a `UserWarning` from the SDK; the tool suppresses the specific experimental warning internally. The API surface may change in future SDK versions.

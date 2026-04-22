@@ -551,6 +551,95 @@ def test_build_dr_multimodal_input_timeout(tmp_path, mocker, capsys):
     assert exc.value.code == 1
 
 
+# --- continuation (previous_interaction_id) tests ---
+
+def test_run_deep_research_passes_previous_interaction_id(mocker):
+    """_run_deep_research includes previous_interaction_id in interactions.create call.
+
+    SDK field confirmed via help(client.interactions.create):
+    previous_interaction_id: 'str | Omit' — stateful continuation parameter.
+    """
+    interaction = _make_mock_interaction(interaction_id="ia-new-456")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    result = gemini_search._run_deep_research(
+        "follow-up question",
+        "deep-research-preview-04-2026",
+        mock_client,
+        previous_interaction_id="ia-prior-abc123",
+    )
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert call_kwargs["previous_interaction_id"] == "ia-prior-abc123"
+    assert result["previous_interaction_id"] == "ia-prior-abc123"
+    assert result["interaction_id"] == "ia-new-456"
+
+
+def test_run_deep_research_omits_previous_interaction_id_when_not_provided(mocker):
+    """_run_deep_research does not send previous_interaction_id for fresh requests."""
+    interaction = _make_mock_interaction()
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    result = gemini_search._run_deep_research(
+        "fresh query",
+        "deep-research-preview-04-2026",
+        mock_client,
+    )
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert "previous_interaction_id" not in call_kwargs
+    assert "previous_interaction_id" not in result
+
+
+def test_run_deep_research_continuation_result_shape(mocker):
+    """_run_deep_research result includes previous_interaction_id key only when given."""
+    interaction = _make_mock_interaction(interaction_id="ia-follow")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    result = gemini_search._run_deep_research(
+        "what else?",
+        "deep-research-preview-04-2026",
+        mock_client,
+        previous_interaction_id="ia-prior-000",
+    )
+
+    assert result["query"] == "what else?"
+    assert result["interaction_id"] == "ia-follow"
+    assert result["previous_interaction_id"] == "ia-prior-000"
+    assert result["status"] == "completed"
+
+
+def test_deep_research_json_output_includes_previous_interaction_id(mocker, capsys):
+    """deep_research() JSON output includes previous_interaction_id when provided."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction(
+        interaction_id="ia-follow-789",
+        text="Follow-up report",
+        sources=[{"title": "S", "url": "https://s.com"}],
+    )
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research(
+        "follow-up topic",
+        as_json=True,
+        previous_interaction_id="ia-prior-123",
+    )
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert output["interaction_id"] == "ia-follow-789"
+    assert output["previous_interaction_id"] == "ia-prior-123"
+    assert output["answer"] == "Follow-up report"
+
+
 # --- _run_deep_research dispatch tests ---
 
 def test_run_deep_research_dispatches_pdf_to_multimodal(tmp_path, mocker):
