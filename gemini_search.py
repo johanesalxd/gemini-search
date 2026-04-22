@@ -40,6 +40,7 @@ Continuation — two distinct modes:
     Pass --previous-interaction-id <id> using the interaction_id from a prior deep-research run.
 """
 
+import base64
 import json
 import mimetypes
 import os
@@ -55,6 +56,26 @@ _DEFAULT_DEEP_RESEARCH_AGENT = "deep-research-preview-04-2026"
 # Docs: ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions
 _DEFAULT_FOLLOWUP_MODEL = "gemini-3.1-pro-preview"
 _DEEP_RESEARCH_POLL_INTERVAL_SECONDS = 5
+_IMAGE_OUTPUT_DIR_PREFIX = "/tmp/gemini-search-"
+
+
+def _save_image(data_b64: str, interaction_id: str, index: int) -> str:
+    """Decode a base64 image and save it to /tmp/gemini-search-<id>/.
+
+    Args:
+        data_b64: Base64-encoded image data.
+        interaction_id: Interaction ID for directory naming.
+        index: 1-based image index for file naming.
+
+    Returns:
+        Absolute path to the saved image file.
+    """
+    out_dir = pathlib.Path(f"{_IMAGE_OUTPUT_DIR_PREFIX}{interaction_id}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image_bytes = base64.b64decode(data_b64)
+    file_path = out_dir / f"image_{index:03d}.png"
+    file_path.write_bytes(image_bytes)
+    return str(file_path)
 
 
 def get_api_key() -> str:
@@ -310,6 +331,8 @@ def _run_deep_research(
     client,
     file_path: str | None = None,
     previous_interaction_id: str | None = None,
+    followup_model: str = _DEFAULT_FOLLOWUP_MODEL,
+    visualization: bool = True,
 ) -> dict:
     # Dispatch input construction based on file type.
     if not file_path:
@@ -343,17 +366,24 @@ def _run_deep_research(
         # The API uses previous_interaction_id to load the conversation history from the
         # completed Deep Research interaction. No background=True; call is synchronous.
         create_kwargs: dict = {
-            "model": _DEFAULT_FOLLOWUP_MODEL,
+            "model": followup_model,
             "input": dr_input,
             "previous_interaction_id": previous_interaction_id,
         }
         is_followup = True
     else:
         # Fresh Deep Research run: agent-based with background execution + polling.
+        # agent_config controls agent behavior (type, visualization, etc.).
+        # Docs: ai.google.dev/gemini-api/docs/deep-research#agent-configuration
+        agent_config = {
+            "type": "deep-research",
+            "visualization": "auto" if visualization else "off",
+        }
         create_kwargs = {
             "agent": agent,
             "input": dr_input,
             "background": True,
+            "agent_config": agent_config,
         }
         is_followup = False
 
@@ -384,7 +414,9 @@ def _run_deep_research(
 
     answer = ""
     sources = []
+    images = []
     seen_urls: set[str] = set()
+    image_index = 0
 
     for content in interaction.outputs or []:
         # interaction.outputs contains discriminated-union content items, each
@@ -427,6 +459,24 @@ def _run_deep_research(
                         seen_urls.add(url)
                         sources.append({"title": title, "url": url})
 
+        elif content_type == "image":
+            # Image content from visualization. The agent generates charts/graphs
+            # as base64-encoded image data when visualization="auto".
+            # Docs: ai.google.dev/gemini-api/docs/deep-research#visualization
+            data_b64 = getattr(content, "data", None)
+            if data_b64:
+                image_index += 1
+                try:
+                    saved_path = _save_image(
+                        data_b64, interaction.id, image_index
+                    )
+                    images.append({"path": saved_path, "index": image_index})
+                except Exception as e:
+                    print(
+                        f"WARNING: Failed to save image {image_index}: {e}",
+                        file=sys.stderr,
+                    )
+
         elif content_type == "google_search_result":
             # Each result item has .title and .url.
             for result_item in getattr(content, "result", None) or []:
@@ -443,10 +493,11 @@ def _run_deep_research(
         "status": interaction.status,
         "answer": answer.strip(),
         "sources": sources,
+        "images": images,
     }
     if previous_interaction_id:
         result["previous_interaction_id"] = previous_interaction_id
-        result["followup_model"] = _DEFAULT_FOLLOWUP_MODEL
+        result["followup_model"] = followup_model
     return result
 
 
@@ -456,6 +507,8 @@ def deep_research(
     as_json: bool = False,
     file_path: str | None = None,
     previous_interaction_id: str | None = None,
+    followup_model: str = _DEFAULT_FOLLOWUP_MODEL,
+    visualization: bool = True,
 ) -> None:
     if previous_interaction_id:
         print(
@@ -475,6 +528,8 @@ def deep_research(
         client,
         file_path=file_path,
         previous_interaction_id=previous_interaction_id,
+        followup_model=followup_model,
+        visualization=visualization,
     )
 
     if as_json:
@@ -493,6 +548,11 @@ def deep_research(
     print("=== DEEP RESEARCH REPORT ===")
     print(result["answer"])
     print()
+    if result.get("images"):
+        print("=== IMAGES ===")
+        for img in result["images"]:
+            print(f"  [{img['index']}] {img['path']}")
+        print()
     if result["sources"]:
         print("=== SOURCES ===")
         for i, s in enumerate(result["sources"], 1):
@@ -557,6 +617,23 @@ def main() -> None:
             "Only valid for deep-research; ignored for search."
         ),
     )
+    parser.add_argument(
+        "--followup-model",
+        default=_DEFAULT_FOLLOWUP_MODEL,
+        help=(
+            f"Gemini model for post-report follow-up Q&A (default: {_DEFAULT_FOLLOWUP_MODEL}). "
+            "Only used with --previous-interaction-id; ignored otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--no-visualization",
+        action="store_true",
+        help=(
+            "Disable agent-generated charts and images in deep-research output. "
+            "By default, visualization is enabled (visualization='auto'). "
+            "Only applies to deep-research; ignored for search."
+        ),
+    )
     args = parser.parse_args()
 
     if args.command == "search":
@@ -579,6 +656,8 @@ def main() -> None:
             as_json=args.json,
             file_path=args.file,
             previous_interaction_id=args.previous_interaction_id,
+            followup_model=args.followup_model,
+            visualization=not args.no_visualization,
         )
 
 
