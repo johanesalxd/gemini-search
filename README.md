@@ -1,10 +1,10 @@
 # gemini-search
 
-Google Search via Gemini Grounding API + Deep Research — official Google web index, AI-synthesized answer + source URLs.
+Google-backed research CLI with two distinct modes:
+- **`search`** — fast grounded synthesis (typically 15–25 s)
+- **`deep-research`** — multi-step research report (typically 1–3 min)
 
-Two modes:
-- **`search`** — fast grounded synthesis (15–25 s), uses Gemini `google_search` tool
-- **`deep-research`** — thorough multi-step research report (1–3 min), uses Gemini Interactions API
+Good for current facts, cited web synthesis, and deeper topic/article analysis.
 
 ## Prerequisites
 
@@ -19,6 +19,19 @@ git clone https://github.com/johanesalxd/gemini-search.git
 cd gemini-search
 uv sync
 ```
+
+## When to use which mode
+
+| | `search` | `deep-research` |
+|---|---|---|
+| Best for | Current facts, news, quick lookups | In-depth research, complex topics |
+| Typical latency | 15–25 s | 1–3 min |
+| Output | Synthesized answer + sources | Research report + sources |
+| `--raw-urls` | Supported | Not supported |
+| `--file` text | Supported | Supported |
+| `--file` PDF | Supported | Supported |
+| `--file` image | Not a primary use case | Supported |
+| Visualization | N/A | Charts/graphs saved to `/tmp` unless disabled |
 
 ## Usage
 
@@ -81,36 +94,21 @@ uv run gemini_search.py deep-research "query" --no-visualization
 
 ## File input — `--file`
 
-Both modes accept `--file <path>` to attach a local file as context for the query.
+Both modes accept `--file <path>` to attach local context.
 
 | File type | `search` | `deep-research` |
 |---|---|---|
-| `.txt`, `.md`, any `text/*` | Supported — inline string prepended to query | Supported — inline string prepended to query |
-| `.pdf` | Supported (up to 20 MB) | Supported — Files API upload |
-| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported — Files API upload |
-| Audio, Video | Not a primary use case | Not implemented in CLI (underlying agent supports them; deferred) |
-| Other binary | Not a primary use case | Warning emitted, query runs without file |
+| Text (`.txt`, `.md`, `text/*`) | Supported | Supported |
+| PDF | Supported (up to 20 MB) | Supported |
+| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported |
+| Audio / Video | Not a primary use case | Not implemented in CLI |
+| Other binary | Not a primary use case | Warning emitted; query runs without file |
 
-**Notes:**
-- `query` remains required even when `--file` is given. The query is the instruction to apply to the file (e.g., "summarize this", "what risks does this identify?").
-- PDF and image inputs for `deep-research` are uploaded to the Gemini Files API (`client.files.upload`), polled until `ACTIVE`, then passed as a typed content list to `client.interactions.create`. No local size limit applies (Files API handles large files).
-- Audio and video are supported by the underlying Deep Research agent API but are not implemented in the CLI (impractical for typical research workflows).
-- To ask a follow-up question against a completed Deep Research report, pass `--previous-interaction-id <id>` using the `interaction_id` from a previous run. The follow-up is sent as a **model-based Interactions request** (not another Deep Research agent run) using `model="gemini-3.1-pro-preview"` + `previous_interaction_id`. This is the docs-backed post-report Q&A contract ([ai.google.dev/gemini-api/docs/deep-research](https://ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions)). The result includes a new `interaction_id` and a `followup_model` field.
-- File content is context only. The `query` field in JSON output reflects the original query string, not the file content.
-
-## When to use search vs deep-research
-
-| | search | deep-research |
-|---|---|---|
-| Latency | 15–25 s | 1–3 min |
-| Output | Synthesized paragraph + sources | Multi-section research report + sources |
-| Use case | Current facts, news, quick lookups | In-depth research, complex topics |
-| `--raw-urls` | Supported | Not supported |
-| `--file` text | Supported | Supported |
-| `--file` PDF | Supported (inline multipart) | Supported (Files API upload) |
-| `--file` image | Not a primary use case | Supported (Files API upload) |
-| Visualization | N/A | Charts/graphs saved to `/tmp` (disable with `--no-visualization`) |
-| Cost | Lower | Higher |
+Notes:
+- `query` remains required even when `--file` is given; it is the instruction to apply to the file.
+- For `deep-research`, PDFs and images are uploaded through the Gemini Files API before being attached to the interaction.
+- Audio and video may exist in the underlying API surface, but are not exposed by this CLI.
+- File content is context only; the JSON `query` field remains the original query string.
 
 ## Output schemas
 
@@ -156,11 +154,11 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 }
 ```
 
-The `followup_model` field indicates that the follow-up used a model-based interaction (not the Deep Research agent). The `agent` field still reflects the original Deep Research agent whose report is being followed up on. The `images` array contains paths to saved visualization files (charts, graphs) generated by the agent; it is empty when no visuals were produced or when `--no-visualization` is used.
-
-Note: `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
-
-Deep Research citations may appear inline in the `answer` text (as markdown links), and `sources` can be empty on valid runs. This is expected behavior.
+Notes:
+- `--previous-interaction-id` switches to a fast post-report follow-up path rather than another full Deep Research run.
+- `followup_model` shows which model handled the follow-up interaction.
+- `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
+- Deep Research citations may appear inline in `answer`, so `sources` can be empty on valid runs.
 
 ## Agent Skill
 

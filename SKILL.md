@@ -1,32 +1,42 @@
 ---
 name: gemini-search
-description: "Google Search via Gemini Grounding API + Deep Research. Two modes: 'search' for fast grounded synthesis (15–25s, current facts, citations); 'deep-research' for thorough multi-step research reports (1–3 min, complex topics). Use 'search' for: factual queries, breaking news, quick lookups. Use 'deep-research' for: in-depth analysis, complex research questions. NOT for: raw Google rankings (use Serper), non-synthesis research (use Brave/Exa)."
+description: "Google Search via Gemini in two modes. Use `search` for fast grounded synthesis with sources, and `deep-research` for slower multi-step research reports and follow-up Q&A. Good for current facts, cited web synthesis, and deeper topic/article analysis. NOT for raw rankings (use Serper) or broad multi-source research orchestration (use Brave/Exa/deep-analysis when needed)."
 ---
 
-# gemini-search — Google Search via Gemini Grounding API + Deep Research
+# gemini-search
 
-Two modes:
-- **`search`** — Fast grounded synthesis (15–25 s). Single-turn answer + sources.
-- **`deep-research`** — Thorough multi-step research report (1–3 min). Supports follow-up Q&A via `--previous-interaction-id`.
+Google-backed research CLI with two distinct modes:
+- **`search`** — fast grounded synthesis (typically 15-25 s)
+- **`deep-research`** — multi-step research report (typically 1-3 min)
+
+Use this skill when you specifically want the local `gemini_search.py` CLI behavior rather than a generic search tool.
 
 ## Auth
 
 `GOOGLE_API_KEY` environment variable required.
 
-## Usage
+## Use when
 
-### search — fast grounded synthesis (15–25 s)
+- you want a Gemini-grounded web answer with source links
+- you want a deeper Gemini research report on a topic, URL, or attached file
+- you want to continue a completed Deep Research run with a follow-up question
+
+Do not use this skill when you need raw search rankings, broad multi-source research orchestration, or a non-Gemini search stack.
+
+## Core usage
+
+### `search` — fast grounded synthesis
 
 ```bash
 uv run gemini_search.py search "query"
-uv run gemini_search.py search "query" --raw-urls       # sources only
-uv run gemini_search.py search "query" --json            # JSON output
+uv run gemini_search.py search "query" --raw-urls
+uv run gemini_search.py search "query" --json
 uv run gemini_search.py search "query" --model gemini-3-flash-preview
 uv run gemini_search.py search "summarize the key points" --file ./notes.md
 uv run gemini_search.py search "what risks does this identify?" --file ./report.pdf
 ```
 
-### deep-research — thorough research report (1–3 min)
+### `deep-research` — multi-step research report
 
 ```bash
 uv run gemini_search.py deep-research "query"
@@ -40,68 +50,45 @@ uv run gemini_search.py deep-research "summarize section 3" --previous-interacti
 uv run gemini_search.py deep-research "query" --no-visualization
 ```
 
-> A progress notice is printed to stderr. Do not interpret silence as a hang — the call is blocking and may take up to 3 minutes.
+A progress notice is printed to stderr. Deep Research is blocking and may take up to a few minutes.
 
 ## File input — `--file`
 
-Both modes accept `--file <path>` to attach a local file as context.
+Both modes accept `--file <path>` to attach local context.
 
 | File type | `search` | `deep-research` |
 |---|---|---|
-| `.txt`, `.md`, any `text/*` | Supported | Supported |
-| `.pdf` | Supported (up to 20 MB) | Supported |
-| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported |
-| Audio, Video | Not supported | Not implemented |
-| Other binary | Not supported | Warning emitted, query runs without file |
+| Text (`.txt`, `.md`, `text/*`) | Supported | Supported |
+| PDF | Supported | Supported |
+| Images | Not a primary use case | Supported |
+| Audio / Video | Not supported | Not implemented |
+| Other binary | Not supported | Warning emitted; query continues without file |
 
-`query` remains required even when `--file` is given — it is the instruction to apply to the file.
+`query` remains required even when `--file` is present.
 
-## JSON schemas
+## Output expectations
 
-### search --json
+- `search --json` returns: `query`, `model`, `search_queries_used`, `answer`, `sources`
+- `deep-research --json` returns: `query`, `agent`, `interaction_id`, `status`, `answer`, `sources`, and optionally `images`
+- when `--previous-interaction-id` is used, deep-research output also includes `previous_interaction_id` and `followup_model`
 
-```json
-{
-  "query": "...",
-  "model": "gemini-3-flash-preview",
-  "search_queries_used": ["..."],
-  "answer": "...",
-  "sources": [{"title": "...", "url": "..."}]
-}
-```
+Do not assume `search` and `deep-research` share the same schema.
 
-### deep-research --json
+## Key gotchas
 
-```json
-{
-  "query": "...",
-  "agent": "deep-research-preview-04-2026",
-  "interaction_id": "...",
-  "status": "completed",
-  "answer": "...",
-  "sources": [{"title": "...", "url": "..."}],
-  "images": [{"path": "/tmp/gemini-search-ia-123/image_001.png", "index": 1}]
-}
-```
+- **`search`: Gemini may not search unless the prompt is clearly current.** Use phrasing like `today`, `current`, or `latest` when grounding matters.
+- **`search`: source URLs may be redirect/proxy URLs.** Titles are often the more stable surface.
+- **`deep-research`: `--raw-urls` is not supported.** It warns and is ignored.
+- **`deep-research`: `--model` is not the control knob for the research run.** Use `--agent` for the fresh run and `--followup-model` for post-report follow-up.
+- **`deep-research`: fresh run and follow-up are different paths.** Fresh research uses the Deep Research agent; `--previous-interaction-id` triggers a model-based follow-up interaction against a completed report.
+- **`deep-research`: visualization is on by default.** Generated charts/graphs are saved under `/tmp/gemini-search-<interaction_id>/` as PNG files. Use `--no-visualization` to disable.
+- **`deep-research`: citations may be embedded in `answer`.** `sources` can be empty on valid runs.
+- **Deep Research is preview/experimental.** Agent IDs and response details may drift with SDK/API changes.
 
-When `--previous-interaction-id` is provided, the output also includes `"previous_interaction_id"` and `"followup_model"`.
+## Operational guidance
 
-Note: `search_queries_used` is absent from deep-research output. Do not parse both with the same schema.
+Recommended timeout headroom:
+- `search` -> about 30 s
+- `deep-research` -> about 180 s
 
-## Parallel Execution
-
-| Mode | Latency | Recommended timeout |
-|---|---|---|
-| search | 15–25 s | 30000 ms |
-| deep-research | 60–180 s | 180000 ms |
-
-## Gotchas
-
-- **search: Gemini may not search.** Use explicit phrasing like "today", "current", "latest" to force grounding — otherwise it answers from training data.
-- **search: Source URLs are proxied redirects.** Titles are reliable; URLs need redirect-following for actual destinations.
-- **deep-research: `--raw-urls` is not supported.** Passing it emits a warning and is ignored.
-- **deep-research: `--model` is ignored.** Use `--agent` to select the agent.
-- **deep-research: `--previous-interaction-id` enables follow-up Q&A.** The follow-up runs as a fast model interaction, not another full research cycle. Use `--followup-model` to override the default model. The result gains `followup_model` and `previous_interaction_id` fields.
-- **deep-research: visualization is on by default.** The agent may generate charts/graphs. Images are saved to `/tmp/gemini-search-<id>/` as PNG files. Use `--no-visualization` to disable.
-- **deep-research: citations may be embedded in `answer` text.** The `sources` field can be `[]` on valid runs — this is expected, not a bug.
-- **deep-research: the API is experimental.** The API surface may change in future SDK versions.
+If this skill grows materially larger later, keep `SKILL.md` focused on triggering and operation, and move bulky reference detail out instead of duplicating the full README.
