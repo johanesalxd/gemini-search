@@ -81,6 +81,7 @@ Do not assume `search` and `deep-research` share the same schema.
 - **`deep-research`: `--raw-urls` is not supported.** It warns and is ignored.
 - **`deep-research`: `--model` is not the control knob for the research run.** Use `--agent` for the fresh run and `--followup-model` for post-report follow-up.
 - **`deep-research`: fresh run and follow-up are different paths.** Fresh research uses the Deep Research agent; `--previous-interaction-id` triggers a model-based follow-up interaction against a completed report.
+- **`deep-research`: post-report follow-up continuity is currently blocked by live API behavior.** The CLI enters the expected model-based follow-up path, but real runs can still fail with HTTP 400 `invalid_request`. In some observed responses, the backend includes opaque internal error identifiers such as `Unsupported input part type: go/debugstr` or `go/debugproto`; these are not user-meaningful input types. Treat `--previous-interaction-id` as experimental until the upstream API behavior stabilizes.
 - **`deep-research`: visualization is on by default.** Generated charts/graphs are saved under `/tmp/gemini-search-<interaction_id>/` as PNG files. Use `--no-visualization` to disable.
 - **`deep-research`: citations may be embedded in `answer`.** `sources` can be empty on valid runs.
 - **Deep Research is preview/experimental.** Agent IDs and response details may drift with SDK/API changes.

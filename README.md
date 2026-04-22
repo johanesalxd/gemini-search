@@ -88,7 +88,9 @@ uv run gemini_search.py deep-research "query" --no-visualization
 
 > **Note:** Deep Research is a blocking call that takes **1–3 minutes** to complete. A progress notice is printed to stderr at the start.
 >
-> **Note:** `--previous-interaction-id` switches to a **model-based post-report follow-up** (not another Deep Research agent run). The follow-up uses `gemini-3.1-pro-preview` (or the model specified via `--followup-model`) with `previous_interaction_id` to load the completed report's history — this is the docs-backed continuation contract. Using the Deep Research agent again with a completed interaction ID causes HTTP 400.
+> **Note:** `--previous-interaction-id` switches to a **model-based post-report follow-up** (not another Deep Research agent run). The follow-up uses `gemini-3.1-pro-preview` (or the model specified via `--followup-model`) with `previous_interaction_id` to load the completed report's history.
+>
+> **Current limitation:** post-report follow-up continuity is still blocked by live API behavior. The CLI enters the expected model-based follow-up path, but real runs can still fail with HTTP 400 `invalid_request` because the upstream API rejects part of the follow-up payload as an unsupported internal input type. Error text may include internal backend identifiers such as `go/debugstr` or `go/debugproto`; these are not user-facing file types or CLI options. Treat `--previous-interaction-id` as experimental until the upstream API behavior stabilizes.
 >
 > **Note:** When visualization is enabled (default), the agent may generate charts and graphs as part of the report. Images are saved to `/tmp/gemini-search-<interaction_id>/` and their paths are included in the output.
 
@@ -157,6 +159,7 @@ Notes:
 Notes:
 - `--previous-interaction-id` switches to a fast post-report follow-up path rather than another full Deep Research run.
 - `followup_model` shows which model handled the follow-up interaction.
+- Post-report follow-up continuity is currently blocked by live API behavior and can still fail on real runs with HTTP 400 `invalid_request` (`go/debugstr` / `go/debugproto` input-part errors).
 - `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
 - Deep Research citations may appear inline in `answer`, so `sources` can be empty on valid runs.
 
