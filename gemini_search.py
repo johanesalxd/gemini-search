@@ -139,36 +139,19 @@ def _build_search_contents(query: str, file_path: str | None):
         return [text, query]
 
 
-def _build_dr_input(query: str, file_path: str | None) -> str:
-    """Build the input string for text files or no-file case.
-
-    Text files are prepended as inline content. For PDF and image files,
-    use _build_dr_multimodal_input instead (called from _run_deep_research).
-    Any other binary type falls back to a warning + bare query.
+def _build_dr_input(query: str, file_path: str) -> str:
+    """Prepend a text file's content to the query for Deep Research input.
 
     Args:
         query: The user query string.
-        file_path: Optional path to a local file to include as context.
+        file_path: Path to a text file (caller must verify it exists and is text).
 
     Returns:
-        A string combining file content (if text) and the query.
+        A string with file content prepended, separated from the query.
     """
-    if not file_path:
-        return query
-
-    path = _validate_file_path(file_path)
-    if _is_text_file(path):
-        content = path.read_text(encoding="utf-8")
-        return f"[Document: {path.name}]\n\n{content}\n\n---\n\n{query}"
-    else:
-        # Defensive fallback for unsupported binary types called directly.
-        # PDF and image/* are handled via _build_dr_multimodal_input in _run_deep_research.
-        print(
-            "WARNING: --file with this binary type is not supported for deep-research; "
-            "passing query only.",
-            file=sys.stderr,
-        )
-        return query
+    path = pathlib.Path(file_path)
+    content = path.read_text(encoding="utf-8")
+    return f"[Document: {path.name}]\n\n{content}\n\n---\n\n{query}"
 
 
 def _build_dr_multimodal_input(

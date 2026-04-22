@@ -1,4 +1,4 @@
-"""Tests for _run_deep_research(), _build_dr_input(), and deep_research() output modes.
+"""Tests for _run_deep_research(), deep_research(), and related helpers.
 
 Mock objects reflect the real _interactions SDK discriminated-union output shape:
   - TextContent:               type="text", .text, .annotations
@@ -321,12 +321,6 @@ def test_run_deep_research_deduplicates_annotation_and_search_result_urls(mocker
 
 # --- _build_dr_input tests ---
 
-def test_build_dr_input_no_file():
-    """_build_dr_input returns bare query string when no file given."""
-    result = gemini_search._build_dr_input("my query", None)
-    assert result == "my query"
-
-
 def test_build_dr_input_text_file(tmp_path):
     """_build_dr_input prepends file content for text files."""
     txt = tmp_path / "brief.txt"
@@ -337,7 +331,6 @@ def test_build_dr_input_text_file(tmp_path):
     assert "[Document: brief.txt]" in result
     assert "Research focus: quantum computing." in result
     assert "conduct research on this" in result
-    # File content comes before the query
     assert result.index("Research focus") < result.index("conduct research on this")
 
 
@@ -351,29 +344,6 @@ def test_build_dr_input_markdown_file(tmp_path):
     assert "[Document: notes.md]" in result
     assert "# Notes" in result
     assert "research this brief" in result
-
-
-def test_build_dr_input_binary_warns_and_falls_back(tmp_path, capsys):
-    """_build_dr_input warns and returns bare query for unsupported binary types."""
-    # Use a .bin extension; MIME will be unknown/application type, not text/*.
-    # PDF and image/* are now handled via _build_dr_multimodal_input, not _build_dr_input.
-    # This test covers the defensive fallback for truly unsupported types called directly.
-    pdf = tmp_path / "report.pdf"
-    pdf.write_bytes(b"%PDF-1.4 fake bytes")
-
-    result = gemini_search._build_dr_input("summarize", str(pdf))
-
-    captured = capsys.readouterr()
-    assert "WARNING" in captured.err
-    assert "not supported" in captured.err
-    assert result == "summarize"
-
-
-def test_build_dr_input_missing_file():
-    """_build_dr_input exits with error when file does not exist."""
-    with pytest.raises(SystemExit) as exc:
-        gemini_search._build_dr_input("query", "/nonexistent/path/file.txt")
-    assert exc.value.code == 1
 
 
 def test_run_deep_research_passes_file_content_to_agent(tmp_path, mocker):

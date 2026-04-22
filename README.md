@@ -86,8 +86,8 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 | File type | `search` | `deep-research` |
 |---|---|---|
 | `.txt`, `.md`, any `text/*` | Supported — inline string prepended to query | Supported — inline string prepended to query |
-| `.pdf` | Supported — inline `Part.from_bytes` multipart | Supported — Files API upload → typed `document` input |
-| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported — Files API upload → typed `image` input |
+| `.pdf` | Supported (up to 20 MB) | Supported — Files API upload |
+| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported — Files API upload |
 | Audio, Video | Not a primary use case | Not implemented in CLI (underlying agent supports them; deferred) |
 | Other binary | Not a primary use case | Warning emitted, query runs without file |
 
@@ -160,16 +160,7 @@ The `followup_model` field indicates that the follow-up used a model-based inter
 
 Note: `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
 
-**Two distinct Interactions API paths:**
-
-| Mode | API path | When |
-|---|---|---|
-| Deep Research run | `agent="deep-research-preview-04-2026"` + `background=True` + polling | No `--previous-interaction-id` |
-| Post-report follow-up | `model="gemini-3.1-pro-preview"` + `previous_interaction_id` (synchronous) | With `--previous-interaction-id` |
-
-Deep Research runs asynchronously under the hood with `background=True` and polls until completion. Post-report follow-ups are synchronous model interactions that load conversation history via `previous_interaction_id`.
-
-Deep Research citations may appear inline in the `answer` text (for example as markdown links), and `sources` can still be empty on some valid runs. This is expected API behavior, not a parsing bug.
+Deep Research citations may appear inline in the `answer` text (as markdown links), and `sources` can be empty on valid runs. This is expected behavior.
 
 ## Agent Skill
 
