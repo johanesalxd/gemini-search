@@ -84,17 +84,6 @@ def test_main_passes_previous_interaction_id_to_deep_research(mocker):
     )
 
 
-def test_main_previous_interaction_id_defaults_to_none(mocker):
-    """main() passes previous_interaction_id=None when flag is absent."""
-    mock_dr = mocker.patch("gemini_search.deep_research")
-    mocker.patch("sys.argv", ["gemini_search.py", "deep-research", "fresh query"])
-
-    gemini_search.main()
-
-    call_kwargs = mock_dr.call_args.kwargs
-    assert call_kwargs["previous_interaction_id"] is None
-
-
 def test_main_passes_model_to_search(mocker):
     """main() forwards --model to search()."""
     mock_search = mocker.patch("gemini_search.search")

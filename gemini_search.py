@@ -14,7 +14,6 @@ Usage:
   uv run gemini_search.py deep-research "query"
   uv run gemini_search.py deep-research "query" --json
   uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2026
-  uv run gemini_search.py deep-research "query" --agent deep-research-max-preview-04-2026
   uv run gemini_search.py deep-research "what does this say about X?" --file ./brief.md
   uv run gemini_search.py deep-research "research based on this report" --file ./report.pdf
   uv run gemini_search.py deep-research "analyze this diagram" --file ./chart.png
@@ -25,7 +24,7 @@ Env: GOOGLE_API_KEY (required)
 File input support:
   search:        text files (.txt, .md, etc.) and PDF (<=20 MB) via Part.from_bytes
   deep-research: text files (inline string prepend); PDF and images via Files API
-                 upload (client.files.upload) → typed typed document/image input list.
+                 upload (client.files.upload) → typed document/image input list.
                  Audio and video are supported by the underlying agent API but are
                  deferred from the CLI (impractical for research workflows).
 
@@ -40,6 +39,7 @@ Continuation — two distinct modes:
     Pass --previous-interaction-id <id> using the interaction_id from a prior deep-research run.
 """
 
+import argparse
 import base64
 import json
 import mimetypes
@@ -48,7 +48,6 @@ import pathlib
 import sys
 import time
 import warnings
-import argparse
 
 _DEFAULT_SEARCH_MODEL = "gemini-3-flash-preview"
 _DEFAULT_DEEP_RESEARCH_AGENT = "deep-research-preview-04-2026"
@@ -78,7 +77,17 @@ def _save_image(data_b64: str, interaction_id: str, index: int) -> str:
     return str(file_path)
 
 
+def _validate_file_path(file_path: str) -> pathlib.Path:
+    """Resolve file_path and exit if it does not exist."""
+    path = pathlib.Path(file_path)
+    if not path.exists():
+        print(f"ERROR: --file path does not exist: {file_path}", file=sys.stderr)
+        sys.exit(1)
+    return path
+
+
 def get_api_key() -> str:
+    """Read GOOGLE_API_KEY from environment or exit with an error."""
     key = os.environ.get("GOOGLE_API_KEY")
     if not key:
         print("ERROR: GOOGLE_API_KEY environment variable not set", file=sys.stderr)
@@ -119,11 +128,7 @@ def _build_search_contents(query: str, file_path: str | None):
 
     from google.genai import types
 
-    path = pathlib.Path(file_path)
-    if not path.exists():
-        print(f"ERROR: --file path does not exist: {file_path}", file=sys.stderr)
-        sys.exit(1)
-
+    path = _validate_file_path(file_path)
     mime = _detect_mime(path)
     if mime == "application/pdf":
         data = path.read_bytes()
@@ -151,11 +156,7 @@ def _build_dr_input(query: str, file_path: str | None) -> str:
     if not file_path:
         return query
 
-    path = pathlib.Path(file_path)
-    if not path.exists():
-        print(f"ERROR: --file path does not exist: {file_path}", file=sys.stderr)
-        sys.exit(1)
-
+    path = _validate_file_path(file_path)
     if _is_text_file(path):
         content = path.read_text(encoding="utf-8")
         return f"[Document: {path.name}]\n\n{content}\n\n---\n\n{query}"
@@ -239,6 +240,7 @@ def _build_dr_multimodal_input(
 
 
 def _run_search(query: str, model: str, client, file_path: str | None = None) -> dict:
+    """Call generate_content with Google Search grounding and return structured result."""
     from google.genai import types
 
     grounding_tool = types.Tool(google_search=types.GoogleSearch())
@@ -289,6 +291,7 @@ def search(
     as_json: bool = False,
     file_path: str | None = None,
 ) -> None:
+    """Run a grounded search and print results to stdout."""
     key = get_api_key()
     client = _make_client(key)
     result = _run_search(query, model, client, file_path=file_path)
@@ -334,14 +337,16 @@ def _run_deep_research(
     followup_model: str = _DEFAULT_FOLLOWUP_MODEL,
     visualization: bool = True,
 ) -> dict:
+    """Run a Deep Research interaction and return structured result.
+
+    Fresh runs use agent-based background execution with polling.
+    Follow-ups (previous_interaction_id set) use model-based synchronous Q&A.
+    """
     # Dispatch input construction based on file type.
     if not file_path:
         dr_input: str | list = query
     else:
-        path = pathlib.Path(file_path)
-        if not path.exists():
-            print(f"ERROR: --file path does not exist: {file_path}", file=sys.stderr)
-            sys.exit(1)
+        path = _validate_file_path(file_path)
         mime = _detect_mime(path)
         if mime.startswith("text/"):
             dr_input = _build_dr_input(query, file_path)
@@ -510,6 +515,7 @@ def deep_research(
     followup_model: str = _DEFAULT_FOLLOWUP_MODEL,
     visualization: bool = True,
 ) -> None:
+    """Run deep research or post-report follow-up and print results to stdout."""
     if previous_interaction_id:
         print(
             "Post-report follow-up in progress (model-based Q&A)...",
@@ -566,6 +572,7 @@ def deep_research(
 
 
 def main() -> None:
+    """CLI entrypoint — parse args and dispatch to search or deep_research."""
     parser = argparse.ArgumentParser(
         description="Google Search via Gemini Grounding API + Deep Research"
     )
@@ -585,8 +592,7 @@ def main() -> None:
         default=_DEFAULT_DEEP_RESEARCH_AGENT,
         help=(
             f"Agent identifier for deep-research (default: {_DEFAULT_DEEP_RESEARCH_AGENT}). "
-            "Current doc-backed options include deep-research-preview-04-2026 and "
-            "deep-research-max-preview-04-2026. Ignored for search."
+            "Ignored for search."
         ),
     )
     parser.add_argument(

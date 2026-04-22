@@ -54,9 +54,6 @@ uv run gemini_search.py deep-research "query" --json
 # Custom agent (default: deep-research-preview-04-2026)
 uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2026
 
-# More exhaustive Deep Research agent
-uv run gemini_search.py deep-research "query" --agent deep-research-max-preview-04-2026
-
 # Attach a text file as a research brief (inline prepend)
 uv run gemini_search.py deep-research "conduct research based on this brief" --file ./brief.md
 
