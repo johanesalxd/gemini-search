@@ -29,10 +29,15 @@ File input support:
                  Audio and video are supported by the underlying agent API but are
                  deferred from the CLI (impractical for research workflows).
 
-Continuation (deep-research only):
-  Pass --previous-interaction-id <id> to continue from a prior deep-research turn.
-  The interaction_id from a previous run is printed to stdout (and included in --json
-  output). Omit the flag for a fresh (one-shot) research request.
+Continuation — two distinct modes:
+  Deep Research agent (planning):
+    agent="deep-research-preview-04-2026" + background=True + polling.
+    Fresh one-shot research run (no --previous-interaction-id).
+
+  Post-report follow-up Q&A (model-based):
+    model="gemini-3.1-pro-preview" + previous_interaction_id. Synchronous, no polling.
+    Docs: ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions
+    Pass --previous-interaction-id <id> using the interaction_id from a prior deep-research run.
 """
 
 import json
@@ -46,6 +51,9 @@ import argparse
 
 _DEFAULT_SEARCH_MODEL = "gemini-3-flash-preview"
 _DEFAULT_DEEP_RESEARCH_AGENT = "deep-research-preview-04-2026"
+# Model used for post-report follow-up Q&A (model-based Interactions, not the Deep Research agent).
+# Docs: ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions
+_DEFAULT_FOLLOWUP_MODEL = "gemini-3.1-pro-preview"
 _DEEP_RESEARCH_POLL_INTERVAL_SECONDS = 5
 
 
@@ -324,16 +332,30 @@ def _run_deep_research(
             )
             dr_input = query
 
-    # Build keyword arguments for interactions.create. previous_interaction_id
-    # is the SDK-verified field (confirmed via help(client.interactions.create))
-    # for stateful continuation of a prior Deep Research turn.
-    create_kwargs: dict = {
-        "agent": agent,
-        "input": dr_input,
-        "background": True,
-    }
+    # Dispatch to the correct Interactions API path based on whether this is a fresh
+    # Deep Research run or a post-report follow-up Q&A.
+    #
+    # Fresh research run: agent-based, background execution + polling.
+    # Post-report follow-up: model-based, synchronous (no background, no polling).
+    # Docs: ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions
     if previous_interaction_id:
-        create_kwargs["previous_interaction_id"] = previous_interaction_id
+        # Model-based follow-up: use a standard Gemini model, not the Deep Research agent.
+        # The API uses previous_interaction_id to load the conversation history from the
+        # completed Deep Research interaction. No background=True; call is synchronous.
+        create_kwargs: dict = {
+            "model": _DEFAULT_FOLLOWUP_MODEL,
+            "input": dr_input,
+            "previous_interaction_id": previous_interaction_id,
+        }
+        is_followup = True
+    else:
+        # Fresh Deep Research run: agent-based with background execution + polling.
+        create_kwargs = {
+            "agent": agent,
+            "input": dr_input,
+            "background": True,
+        }
+        is_followup = False
 
     try:
         with warnings.catch_warnings():
@@ -344,9 +366,11 @@ def _run_deep_research(
             )
             interaction = client.interactions.create(**create_kwargs)
 
-            while interaction.status == "in_progress":
-                time.sleep(_DEEP_RESEARCH_POLL_INTERVAL_SECONDS)
-                interaction = client.interactions.get(interaction.id)
+            if not is_followup:
+                # Agent-based Deep Research runs asynchronously; poll until complete.
+                while interaction.status == "in_progress":
+                    time.sleep(_DEEP_RESEARCH_POLL_INTERVAL_SECONDS)
+                    interaction = client.interactions.get(interaction.id)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -422,6 +446,7 @@ def _run_deep_research(
     }
     if previous_interaction_id:
         result["previous_interaction_id"] = previous_interaction_id
+        result["followup_model"] = _DEFAULT_FOLLOWUP_MODEL
     return result
 
 
@@ -432,10 +457,16 @@ def deep_research(
     file_path: str | None = None,
     previous_interaction_id: str | None = None,
 ) -> None:
-    print(
-        "Deep Research in progress — this may take 1–3 minutes...",
-        file=sys.stderr,
-    )
+    if previous_interaction_id:
+        print(
+            "Post-report follow-up in progress (model-based Q&A)...",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "Deep Research in progress — this may take 1–3 minutes...",
+            file=sys.stderr,
+        )
     key = get_api_key()
     client = _make_client(key)
     result = _run_deep_research(
@@ -451,7 +482,11 @@ def deep_research(
         return
 
     print(f"Query: {result['query']}")
-    print(f"Agent: {result['agent']}")
+    if "followup_model" in result:
+        print(f"Follow-up Model: {result['followup_model']} (post-report Q&A)")
+        print(f"Prior Interaction ID: {result['previous_interaction_id']}")
+    else:
+        print(f"Agent: {result['agent']}")
     print(f"Status: {result['status']}")
     print(f"Interaction ID: {result['interaction_id']}")
     print()

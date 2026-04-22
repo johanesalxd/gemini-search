@@ -7,7 +7,9 @@ description: "Google Search via Gemini Grounding API + Deep Research. Two modes:
 
 Two modes backed by separate Google APIs:
 - **`search`** — Gemini `google_search` grounding tool. Fast, single-turn, synthesized answer + sources.
-- **`deep-research`** — Gemini Interactions API (`client.interactions.create` + `background=True` polling via `client.interactions.get`). Multi-step research, thorough report, 1–3 min latency.
+- **`deep-research`** — Gemini Interactions API. Two sub-paths:
+  - **Fresh research run**: `agent="deep-research-preview-04-2026"` + `background=True` + polling. Multi-step research report, 1–3 min.
+  - **Post-report follow-up** (`--previous-interaction-id`): `model="gemini-3.1-pro-preview"` + `previous_interaction_id`. Synchronous model Q&A against a completed research report. Docs: ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions
 
 ## Auth
 
@@ -105,12 +107,17 @@ This CLI exposes the core research flow plus `--agent`, `--file`, and `--previou
 {"query", "model", "search_queries_used", "answer", "sources"}
 ```
 
-### deep-research --json
+### deep-research --json (fresh run)
 ```json
 {"query", "agent", "interaction_id", "status", "answer", "sources"}
 ```
 
-When `--previous-interaction-id` is provided, `"previous_interaction_id"` is also included in the output.
+### deep-research --json (post-report follow-up with --previous-interaction-id)
+```json
+{"query", "agent", "interaction_id", "status", "answer", "sources",
+ "previous_interaction_id", "followup_model"}
+```
+`followup_model` is `"gemini-3.1-pro-preview"` — the model used for the synchronous post-report Q&A (not the Deep Research agent).
 
 Note: `search_queries_used` is absent from deep-research output. Do not parse both with the same schema.
 
@@ -128,7 +135,7 @@ Note: `search_queries_used` is absent from deep-research output. Do not parse bo
 - **deep-research: `--raw-urls` is not supported.** Passing it emits a warning and is ignored.
 - **deep-research: `--model` is ignored.** The agent identifier (`--agent`) drives the backend, not a model name.
 - **deep-research: `--file` supports text, PDF, and images.** Text files are prepended inline. PDF and image files are uploaded to the Gemini Files API, polled until `ACTIVE`, then passed as typed `document`/`image` input to the agent. Audio and video are supported by the underlying agent API but are not implemented in the CLI. Other binary types emit a WARNING and the query runs without the file.
-- **deep-research: `--previous-interaction-id` enables follow-up turns.** Pass the `interaction_id` from a prior run to send a continuation request. The SDK field is `previous_interaction_id` (verified via `help(client.interactions.create)`). The result includes a new `interaction_id` for further chaining. Only valid for `deep-research`; ignored for `search`.
+- **deep-research: `--previous-interaction-id` switches to post-report follow-up mode.** The follow-up uses `model="gemini-3.1-pro-preview"` (NOT the Deep Research agent) with `previous_interaction_id` — this is the docs-backed post-report Q&A contract. Using the Deep Research agent again with a completed interaction ID causes HTTP 400 `invalid_request`. The result gains `followup_model` and `previous_interaction_id` fields. Only valid for `deep-research`; ignored for `search`.
 - **deep-research: citations may be embedded in `answer` text.** The `sources` field can still be `[]` on valid runs, even though the CLI also extracts supported citation/search-result structures when present.
 - **deep-research requires background execution at the API layer.** Current Google docs require `background=True` for Deep Research interactions.
 - **deep-research API is experimental.** `client.interactions` carries a `UserWarning` from the SDK; the tool suppresses the specific experimental warning internally. The API surface may change in future SDK versions.

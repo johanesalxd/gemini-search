@@ -71,6 +71,8 @@ uv run gemini_search.py deep-research "what are the regulatory implications?" --
 ```
 
 > **Note:** Deep Research is a blocking call that takes **1–3 minutes** to complete. A progress notice is printed to stderr at the start.
+>
+> **Note:** `--previous-interaction-id` switches to a **model-based post-report follow-up** (not another Deep Research agent run). The follow-up uses `gemini-3.1-pro-preview` with `previous_interaction_id` to load the completed report's history — this is the docs-backed continuation contract. Using the Deep Research agent again with a completed interaction ID causes HTTP 400.
 
 ## File input — `--file`
 
@@ -88,7 +90,7 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 - `query` remains required even when `--file` is given. The query is the instruction to apply to the file (e.g., "summarize this", "what risks does this identify?").
 - PDF and image inputs for `deep-research` are uploaded to the Gemini Files API (`client.files.upload`), polled until `ACTIVE`, then passed as a typed content list to `client.interactions.create`. No local size limit applies (Files API handles large files).
 - Audio and video are supported by the underlying Deep Research agent API but are not implemented in the CLI (impractical for typical research workflows).
-- To continue a prior Deep Research session, pass `--previous-interaction-id <id>` using the `interaction_id` from a previous run. This sends the follow-up as a stateful continuation turn via the `previous_interaction_id` field in the Interactions API. The result includes a new `interaction_id` for chaining further follow-ups.
+- To ask a follow-up question against a completed Deep Research report, pass `--previous-interaction-id <id>` using the `interaction_id` from a previous run. The follow-up is sent as a **model-based Interactions request** (not another Deep Research agent run) using `model="gemini-3.1-pro-preview"` + `previous_interaction_id`. This is the docs-backed post-report Q&A contract ([ai.google.dev/gemini-api/docs/deep-research](https://ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions)). The result includes a new `interaction_id` and a `followup_model` field.
 - File content is context only. The `query` field in JSON output reflects the original query string, not the file content.
 
 ## When to use search vs deep-research
@@ -118,7 +120,7 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 }
 ```
 
-### deep-research --json
+### deep-research --json (fresh run)
 
 ```json
 {
@@ -131,17 +133,33 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 }
 ```
 
-When `--previous-interaction-id` is provided, the output also includes:
+### deep-research --json (with --previous-interaction-id, post-report follow-up)
 
 ```json
 {
-  "previous_interaction_id": "ia-prior-abc123"
+  "query": "...",
+  "agent": "deep-research-preview-04-2026",
+  "interaction_id": "...",
+  "status": "completed",
+  "answer": "...",
+  "sources": [{"title": "...", "url": "..."}],
+  "previous_interaction_id": "ia-prior-abc123",
+  "followup_model": "gemini-3.1-pro-preview"
 }
 ```
 
+The `followup_model` field indicates that the follow-up used a model-based interaction (not the Deep Research agent). The `agent` field still reflects the original Deep Research agent whose report is being followed up on.
+
 Note: `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
 
-Deep Research runs asynchronously under the hood with `background=True` and polls until completion.
+**Two distinct Interactions API paths:**
+
+| Mode | API path | When |
+|---|---|---|
+| Deep Research run | `agent="deep-research-preview-04-2026"` + `background=True` + polling | No `--previous-interaction-id` |
+| Post-report follow-up | `model="gemini-3.1-pro-preview"` + `previous_interaction_id` (synchronous) | With `--previous-interaction-id` |
+
+Deep Research runs asynchronously under the hood with `background=True` and polls until completion. Post-report follow-ups are synchronous model interactions that load conversation history via `previous_interaction_id`.
 
 Deep Research citations may appear inline in the `answer` text (for example as markdown links), and `sources` can still be empty on some valid runs. This is expected API behavior, not a parsing bug.
 

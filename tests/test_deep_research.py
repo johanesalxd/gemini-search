@@ -241,18 +241,7 @@ def test_deep_research_full_output(mocker, capsys):
     assert "Research Src" in captured.out
 
 
-def test_deep_research_progress_notice(mocker, capsys):
-    """deep_research() prints a progress notice to stderr before the call."""
-    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
-    mock_client = mocker.MagicMock()
-    mock_client.interactions.create.return_value = _make_mock_interaction()
-    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
-    mocker.patch("gemini_search._make_client", return_value=mock_client)
 
-    gemini_search.deep_research("topic")
-
-    captured = capsys.readouterr()
-    assert "Deep Research in progress" in captured.err
 
 
 def test_run_deep_research_extracts_url_citation_annotations_from_dicts(mocker):
@@ -553,11 +542,12 @@ def test_build_dr_multimodal_input_timeout(tmp_path, mocker, capsys):
 
 # --- continuation (previous_interaction_id) tests ---
 
-def test_run_deep_research_passes_previous_interaction_id(mocker):
-    """_run_deep_research includes previous_interaction_id in interactions.create call.
+def test_run_deep_research_followup_uses_model_not_agent(mocker):
+    """_run_deep_research uses model-based interaction for post-report follow-up.
 
-    SDK field confirmed via help(client.interactions.create):
-    previous_interaction_id: 'str | Omit' — stateful continuation parameter.
+    Docs: ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions
+    The post-report follow-up must use model= (not agent=) and must NOT send background=True.
+    Using agent= with a completed Deep Research interaction_id causes HTTP 400 invalid_request.
     """
     interaction = _make_mock_interaction(interaction_id="ia-new-456")
     mock_client = mocker.MagicMock()
@@ -572,9 +562,52 @@ def test_run_deep_research_passes_previous_interaction_id(mocker):
     )
 
     call_kwargs = mock_client.interactions.create.call_args.kwargs
+    # Must use model=, not agent=
+    assert call_kwargs.get("model") == gemini_search._DEFAULT_FOLLOWUP_MODEL
+    assert "agent" not in call_kwargs
+    # Must NOT send background=True (follow-up is synchronous)
+    assert "background" not in call_kwargs
     assert call_kwargs["previous_interaction_id"] == "ia-prior-abc123"
     assert result["previous_interaction_id"] == "ia-prior-abc123"
+    assert result["followup_model"] == gemini_search._DEFAULT_FOLLOWUP_MODEL
     assert result["interaction_id"] == "ia-new-456"
+
+
+def test_run_deep_research_followup_does_not_poll(mocker):
+    """_run_deep_research follow-up path does not call interactions.get (synchronous)."""
+    interaction = _make_mock_interaction(interaction_id="ia-sync-follow")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+
+    gemini_search._run_deep_research(
+        "what does section 2 mean?",
+        "deep-research-preview-04-2026",
+        mock_client,
+        previous_interaction_id="ia-prior-xyz",
+    )
+
+    # interactions.get must not be called for the follow-up path
+    mock_client.interactions.get.assert_not_called()
+
+
+def test_run_deep_research_fresh_uses_agent_and_background(mocker):
+    """_run_deep_research fresh (no previous_interaction_id) uses agent= + background=True."""
+    interaction = _make_mock_interaction()
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    gemini_search._run_deep_research(
+        "fresh query",
+        "deep-research-preview-04-2026",
+        mock_client,
+    )
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert call_kwargs.get("agent") == "deep-research-preview-04-2026"
+    assert call_kwargs.get("background") is True
+    assert "model" not in call_kwargs
+    assert "previous_interaction_id" not in call_kwargs
 
 
 def test_run_deep_research_omits_previous_interaction_id_when_not_provided(mocker):
@@ -593,10 +626,11 @@ def test_run_deep_research_omits_previous_interaction_id_when_not_provided(mocke
     call_kwargs = mock_client.interactions.create.call_args.kwargs
     assert "previous_interaction_id" not in call_kwargs
     assert "previous_interaction_id" not in result
+    assert "followup_model" not in result
 
 
 def test_run_deep_research_continuation_result_shape(mocker):
-    """_run_deep_research result includes previous_interaction_id key only when given."""
+    """_run_deep_research result includes previous_interaction_id and followup_model when given."""
     interaction = _make_mock_interaction(interaction_id="ia-follow")
     mock_client = mocker.MagicMock()
     mock_client.interactions.create.return_value = interaction
@@ -612,16 +646,19 @@ def test_run_deep_research_continuation_result_shape(mocker):
     assert result["query"] == "what else?"
     assert result["interaction_id"] == "ia-follow"
     assert result["previous_interaction_id"] == "ia-prior-000"
+    assert result["followup_model"] == gemini_search._DEFAULT_FOLLOWUP_MODEL
     assert result["status"] == "completed"
+    # agent is still reported (the original Deep Research agent whose report is being followed up)
+    assert "agent" in result
 
 
-def test_deep_research_json_output_includes_previous_interaction_id(mocker, capsys):
-    """deep_research() JSON output includes previous_interaction_id when provided."""
+def test_deep_research_json_output_includes_followup_fields(mocker, capsys):
+    """deep_research() JSON output includes previous_interaction_id and followup_model when provided."""
     mocker.patch("gemini_search.get_api_key", return_value="fake-key")
     mock_client = mocker.MagicMock()
     mock_client.interactions.create.return_value = _make_mock_interaction(
         interaction_id="ia-follow-789",
-        text="Follow-up report",
+        text="Follow-up answer",
         sources=[{"title": "S", "url": "https://s.com"}],
     )
     mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
@@ -637,7 +674,56 @@ def test_deep_research_json_output_includes_previous_interaction_id(mocker, caps
     output = json.loads(captured.out)
     assert output["interaction_id"] == "ia-follow-789"
     assert output["previous_interaction_id"] == "ia-prior-123"
-    assert output["answer"] == "Follow-up report"
+    assert output["followup_model"] == gemini_search._DEFAULT_FOLLOWUP_MODEL
+    assert output["answer"] == "Follow-up answer"
+
+
+def test_deep_research_followup_progress_notice(mocker, capsys):
+    """deep_research() with previous_interaction_id prints a follow-up notice (not the research notice)."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction()
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("follow-up q", previous_interaction_id="ia-prior-xxx")
+
+    captured = capsys.readouterr()
+    assert "Post-report follow-up" in captured.err
+    assert "Deep Research in progress" not in captured.err
+
+
+def test_deep_research_followup_text_output(mocker, capsys):
+    """deep_research() follow-up text output shows Follow-up Model, not Agent."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction(
+        text="Follow-up answer text",
+    )
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("elaborate on point 3", previous_interaction_id="ia-prior-zzz")
+
+    captured = capsys.readouterr()
+    assert "Follow-up Model:" in captured.out
+    assert gemini_search._DEFAULT_FOLLOWUP_MODEL in captured.out
+    assert "Prior Interaction ID: ia-prior-zzz" in captured.out
+
+
+def test_deep_research_fresh_progress_notice(mocker, capsys):
+    """deep_research() without previous_interaction_id prints the Deep Research notice."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction()
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("fresh topic")
+
+    captured = capsys.readouterr()
+    assert "Deep Research in progress" in captured.err
+    assert "Post-report follow-up" not in captured.err
 
 
 # --- _run_deep_research dispatch tests ---
