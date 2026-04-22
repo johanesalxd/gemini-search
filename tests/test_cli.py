@@ -34,6 +34,9 @@ def test_main_dispatch_deep_research(mocker):
         agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
         as_json=False,
         file_path=None,
+        previous_interaction_id=None,
+        followup_model=gemini_search._DEFAULT_FOLLOWUP_MODEL,
+        visualization=True,
     )
 
 
@@ -52,6 +55,33 @@ def test_main_rejects_raw_urls_with_deep_research(mocker, capsys):
     assert "--raw-urls" in captured.err
     # deep_research() is still called despite the warning
     mock_dr.assert_called_once()
+
+
+def test_main_passes_previous_interaction_id_to_deep_research(mocker):
+    """main() forwards --previous-interaction-id to deep_research()."""
+    mock_dr = mocker.patch("gemini_search.deep_research")
+    mocker.patch(
+        "sys.argv",
+        [
+            "gemini_search.py",
+            "deep-research",
+            "follow-up question",
+            "--previous-interaction-id",
+            "ia-prior-abc123",
+        ],
+    )
+
+    gemini_search.main()
+
+    mock_dr.assert_called_once_with(
+        "follow-up question",
+        agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
+        as_json=False,
+        file_path=None,
+        previous_interaction_id="ia-prior-abc123",
+        followup_model=gemini_search._DEFAULT_FOLLOWUP_MODEL,
+        visualization=True,
+    )
 
 
 def test_main_passes_model_to_search(mocker):
@@ -88,6 +118,9 @@ def test_main_passes_agent_to_deep_research(mocker):
         agent="custom-agent-id",
         as_json=False,
         file_path=None,
+        previous_interaction_id=None,
+        followup_model=gemini_search._DEFAULT_FOLLOWUP_MODEL,
+        visualization=True,
     )
 
 
@@ -135,4 +168,57 @@ def test_main_passes_file_to_deep_research(mocker):
         agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
         as_json=False,
         file_path="/tmp/brief.txt",
+        previous_interaction_id=None,
+        followup_model=gemini_search._DEFAULT_FOLLOWUP_MODEL,
+        visualization=True,
+    )
+
+
+def test_main_passes_followup_model_to_deep_research(mocker):
+    """main() forwards --followup-model to deep_research()."""
+    mock_dr = mocker.patch("gemini_search.deep_research")
+    mocker.patch(
+        "sys.argv",
+        [
+            "gemini_search.py",
+            "deep-research",
+            "elaborate on point 2",
+            "--previous-interaction-id",
+            "ia-prior-xyz",
+            "--followup-model",
+            "gemini-3-flash-preview",
+        ],
+    )
+
+    gemini_search.main()
+
+    mock_dr.assert_called_once_with(
+        "elaborate on point 2",
+        agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
+        as_json=False,
+        file_path=None,
+        previous_interaction_id="ia-prior-xyz",
+        followup_model="gemini-3-flash-preview",
+        visualization=True,
+    )
+
+
+def test_main_passes_no_visualization_to_deep_research(mocker):
+    """main() forwards --no-visualization as visualization=False."""
+    mock_dr = mocker.patch("gemini_search.deep_research")
+    mocker.patch(
+        "sys.argv",
+        ["gemini_search.py", "deep-research", "q", "--no-visualization"],
+    )
+
+    gemini_search.main()
+
+    mock_dr.assert_called_once_with(
+        "q",
+        agent=gemini_search._DEFAULT_DEEP_RESEARCH_AGENT,
+        as_json=False,
+        file_path=None,
+        previous_interaction_id=None,
+        followup_model=gemini_search._DEFAULT_FOLLOWUP_MODEL,
+        visualization=False,
     )

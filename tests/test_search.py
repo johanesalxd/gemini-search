@@ -2,7 +2,7 @@
 
 import json
 import pathlib
-import sys
+
 import pytest
 
 import gemini_search

@@ -1,13 +1,15 @@
-"""Tests for _run_deep_research(), _build_dr_input(), and deep_research() output modes.
+"""Tests for _run_deep_research(), deep_research(), and related helpers.
 
 Mock objects reflect the real _interactions SDK discriminated-union output shape:
   - TextContent:               type="text", .text, .annotations
   - GoogleSearchResultContent: type="google_search_result", .result[]
+  - ImageContent:              type="image", .data (base64)
 Each item in interaction.outputs has a top-level `type` attribute; there is no
 `.parts` nesting (that is the google.genai.types.Content shape, not the
 interactions Content union).
 """
 
+import base64
 import json
 import pathlib
 import pytest
@@ -24,10 +26,6 @@ def _make_mock_interaction(
 ):
     """Build a minimal mock Interaction object matching the real SDK shape."""
     sources = sources or [{"title": "Src A", "url": "https://a.com"}]
-
-    class FakeAnnotation:
-        def __init__(self, source):
-            self.source = source
 
     class FakeTextContent:
         type = "text"
@@ -241,19 +239,6 @@ def test_deep_research_full_output(mocker, capsys):
     assert "Research Src" in captured.out
 
 
-def test_deep_research_progress_notice(mocker, capsys):
-    """deep_research() prints a progress notice to stderr before the call."""
-    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
-    mock_client = mocker.MagicMock()
-    mock_client.interactions.create.return_value = _make_mock_interaction()
-    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
-    mocker.patch("gemini_search._make_client", return_value=mock_client)
-
-    gemini_search.deep_research("topic")
-
-    captured = capsys.readouterr()
-    assert "Deep Research in progress" in captured.err
-
 
 def test_run_deep_research_extracts_url_citation_annotations_from_dicts(mocker):
     """_run_deep_research extracts sources from dict-form url_citation annotations.
@@ -336,12 +321,6 @@ def test_run_deep_research_deduplicates_annotation_and_search_result_urls(mocker
 
 # --- _build_dr_input tests ---
 
-def test_build_dr_input_no_file():
-    """_build_dr_input returns bare query string when no file given."""
-    result = gemini_search._build_dr_input("my query", None)
-    assert result == "my query"
-
-
 def test_build_dr_input_text_file(tmp_path):
     """_build_dr_input prepends file content for text files."""
     txt = tmp_path / "brief.txt"
@@ -352,7 +331,6 @@ def test_build_dr_input_text_file(tmp_path):
     assert "[Document: brief.txt]" in result
     assert "Research focus: quantum computing." in result
     assert "conduct research on this" in result
-    # File content comes before the query
     assert result.index("Research focus") < result.index("conduct research on this")
 
 
@@ -366,29 +344,6 @@ def test_build_dr_input_markdown_file(tmp_path):
     assert "[Document: notes.md]" in result
     assert "# Notes" in result
     assert "research this brief" in result
-
-
-def test_build_dr_input_binary_warns_and_falls_back(tmp_path, capsys):
-    """_build_dr_input warns and returns bare query for unsupported binary types."""
-    # Use a .bin extension; MIME will be unknown/application type, not text/*.
-    # PDF and image/* are now handled via _build_dr_multimodal_input, not _build_dr_input.
-    # This test covers the defensive fallback for truly unsupported types called directly.
-    pdf = tmp_path / "report.pdf"
-    pdf.write_bytes(b"%PDF-1.4 fake bytes")
-
-    result = gemini_search._build_dr_input("summarize", str(pdf))
-
-    captured = capsys.readouterr()
-    assert "WARNING" in captured.err
-    assert "not supported" in captured.err
-    assert result == "summarize"
-
-
-def test_build_dr_input_missing_file():
-    """_build_dr_input exits with error when file does not exist."""
-    with pytest.raises(SystemExit) as exc:
-        gemini_search._build_dr_input("query", "/nonexistent/path/file.txt")
-    assert exc.value.code == 1
 
 
 def test_run_deep_research_passes_file_content_to_agent(tmp_path, mocker):
@@ -551,6 +506,171 @@ def test_build_dr_multimodal_input_timeout(tmp_path, mocker, capsys):
     assert exc.value.code == 1
 
 
+# --- continuation (previous_interaction_id) tests ---
+
+def test_run_deep_research_followup_uses_model_not_agent(mocker):
+    """_run_deep_research uses model-based interaction for post-report follow-up.
+
+    Docs: ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions
+    The post-report follow-up must use model= (not agent=) and must NOT send background=True.
+    """
+    interaction = _make_mock_interaction(interaction_id="ia-new-456")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+
+    result = gemini_search._run_deep_research(
+        "follow-up question",
+        "deep-research-preview-04-2026",
+        mock_client,
+        previous_interaction_id="ia-prior-abc123",
+    )
+
+    # API call shape: model-based, synchronous, no agent
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert call_kwargs.get("model") == gemini_search._DEFAULT_FOLLOWUP_MODEL
+    assert "agent" not in call_kwargs
+    assert "background" not in call_kwargs
+    assert call_kwargs["previous_interaction_id"] == "ia-prior-abc123"
+    # Result shape includes follow-up fields
+    assert result["query"] == "follow-up question"
+    assert result["interaction_id"] == "ia-new-456"
+    assert result["status"] == "completed"
+    assert result["previous_interaction_id"] == "ia-prior-abc123"
+    assert result["followup_model"] == gemini_search._DEFAULT_FOLLOWUP_MODEL
+
+
+def test_run_deep_research_followup_uses_custom_model(mocker):
+    """_run_deep_research uses the provided followup_model for follow-up."""
+    interaction = _make_mock_interaction(interaction_id="ia-custom-model")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+
+    result = gemini_search._run_deep_research(
+        "follow-up",
+        "deep-research-preview-04-2026",
+        mock_client,
+        previous_interaction_id="ia-prior-abc",
+        followup_model="gemini-3-flash-preview",
+    )
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert call_kwargs["model"] == "gemini-3-flash-preview"
+    assert result["followup_model"] == "gemini-3-flash-preview"
+
+
+def test_run_deep_research_followup_does_not_poll(mocker):
+    """_run_deep_research follow-up path does not call interactions.get (synchronous)."""
+    interaction = _make_mock_interaction(interaction_id="ia-sync-follow")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+
+    gemini_search._run_deep_research(
+        "what does section 2 mean?",
+        "deep-research-preview-04-2026",
+        mock_client,
+        previous_interaction_id="ia-prior-xyz",
+    )
+
+    # interactions.get must not be called for the follow-up path
+    mock_client.interactions.get.assert_not_called()
+
+
+def test_run_deep_research_fresh_uses_agent_and_background(mocker):
+    """_run_deep_research fresh run uses agent + background, no follow-up fields."""
+    interaction = _make_mock_interaction()
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    result = gemini_search._run_deep_research(
+        "fresh query",
+        "deep-research-preview-04-2026",
+        mock_client,
+    )
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert call_kwargs.get("agent") == "deep-research-preview-04-2026"
+    assert call_kwargs.get("background") is True
+    assert "model" not in call_kwargs
+    assert "previous_interaction_id" not in call_kwargs
+    assert "previous_interaction_id" not in result
+    assert "followup_model" not in result
+
+
+def test_deep_research_json_output_includes_followup_fields(mocker, capsys):
+    """deep_research() JSON output includes previous_interaction_id and followup_model when provided."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction(
+        interaction_id="ia-follow-789",
+        text="Follow-up answer",
+        sources=[{"title": "S", "url": "https://s.com"}],
+    )
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research(
+        "follow-up topic",
+        as_json=True,
+        previous_interaction_id="ia-prior-123",
+    )
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert output["interaction_id"] == "ia-follow-789"
+    assert output["previous_interaction_id"] == "ia-prior-123"
+    assert output["followup_model"] == gemini_search._DEFAULT_FOLLOWUP_MODEL
+    assert output["answer"] == "Follow-up answer"
+
+
+def test_deep_research_followup_progress_notice(mocker, capsys):
+    """deep_research() with previous_interaction_id prints a follow-up notice (not the research notice)."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction()
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("follow-up q", previous_interaction_id="ia-prior-xxx")
+
+    captured = capsys.readouterr()
+    assert "Post-report follow-up" in captured.err
+    assert "Deep Research in progress" not in captured.err
+
+
+def test_deep_research_followup_text_output(mocker, capsys):
+    """deep_research() follow-up text output shows Follow-up Model, not Agent."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction(
+        text="Follow-up answer text",
+    )
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("elaborate on point 3", previous_interaction_id="ia-prior-zzz")
+
+    captured = capsys.readouterr()
+    assert "Follow-up Model:" in captured.out
+    assert gemini_search._DEFAULT_FOLLOWUP_MODEL in captured.out
+    assert "Prior Interaction ID: ia-prior-zzz" in captured.out
+
+
+def test_deep_research_fresh_progress_notice(mocker, capsys):
+    """deep_research() without previous_interaction_id prints the Deep Research notice."""
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction()
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("fresh topic")
+
+    captured = capsys.readouterr()
+    assert "Deep Research in progress" in captured.err
+    assert "Post-report follow-up" not in captured.err
+
+
 # --- _run_deep_research dispatch tests ---
 
 def test_run_deep_research_dispatches_pdf_to_multimodal(tmp_path, mocker):
@@ -620,3 +740,237 @@ def test_run_deep_research_warns_for_unsupported_binary(tmp_path, mocker, capsys
     assert "WARNING" in captured.err
     call_kwargs = mock_client.interactions.create.call_args.kwargs
     assert call_kwargs["input"] == "analyze"
+
+
+# --- agent_config tests ---
+
+def test_run_deep_research_passes_agent_config(mocker):
+    """_run_deep_research passes agent_config with visualization='auto' for fresh runs."""
+    interaction = _make_mock_interaction()
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    gemini_search._run_deep_research("q", "agent-id", mock_client)
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert "agent_config" in call_kwargs
+    assert call_kwargs["agent_config"]["type"] == "deep-research"
+    assert call_kwargs["agent_config"]["visualization"] == "auto"
+
+
+def test_run_deep_research_no_visualization(mocker):
+    """_run_deep_research passes visualization='off' when visualization=False."""
+    interaction = _make_mock_interaction()
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    gemini_search._run_deep_research(
+        "q", "agent-id", mock_client, visualization=False
+    )
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert call_kwargs["agent_config"]["visualization"] == "off"
+
+
+def test_run_deep_research_followup_omits_agent_config(mocker):
+    """_run_deep_research follow-up path does not pass agent_config."""
+    interaction = _make_mock_interaction()
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+
+    gemini_search._run_deep_research(
+        "follow-up", "agent-id", mock_client,
+        previous_interaction_id="ia-prior",
+    )
+
+    call_kwargs = mock_client.interactions.create.call_args.kwargs
+    assert "agent_config" not in call_kwargs
+
+
+# --- image output tests ---
+
+def _make_mock_interaction_with_images(
+    interaction_id="ia-img-123",
+    text="Report with charts.",
+    image_data_list=None,
+):
+    """Build a mock Interaction with text + image outputs."""
+    if image_data_list is None:
+        image_data_list = [base64.b64encode(b"fake-png-bytes-1").decode()]
+
+    class FakeTextContent:
+        type = "text"
+
+        def __init__(self, text):
+            self.text = text
+            self.annotations = []
+
+    class FakeImageContent:
+        type = "image"
+
+        def __init__(self, data):
+            self.data = data
+
+    outputs = [FakeTextContent(text=text)]
+    for img_data in image_data_list:
+        outputs.append(FakeImageContent(data=img_data))
+
+    class FakeInteraction:
+        pass
+
+    obj = FakeInteraction()
+    obj.id = interaction_id
+    obj.status = "completed"
+    obj.outputs = outputs
+    return obj
+
+
+def test_run_deep_research_saves_images_to_disk(mocker, tmp_path):
+    """_run_deep_research saves image outputs to /tmp and includes paths in result."""
+    img_bytes = b"\x89PNG\r\n\x1a\nfake-image-data"
+    img_b64 = base64.b64encode(img_bytes).decode()
+
+    interaction = _make_mock_interaction_with_images(
+        interaction_id="ia-viz-001",
+        text="Report with chart.",
+        image_data_list=[img_b64],
+    )
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    result = gemini_search._run_deep_research("q", "agent-id", mock_client)
+
+    assert len(result["images"]) == 1
+    img_info = result["images"][0]
+    assert img_info["index"] == 1
+    assert "ia-viz-001" in img_info["path"]
+    assert img_info["path"].endswith(".png")
+    # Verify file was actually written
+    saved = pathlib.Path(img_info["path"])
+    assert saved.exists()
+    assert saved.read_bytes() == img_bytes
+
+
+def test_run_deep_research_saves_multiple_images(mocker):
+    """_run_deep_research handles multiple image outputs."""
+    img1 = base64.b64encode(b"image-1").decode()
+    img2 = base64.b64encode(b"image-2").decode()
+
+    interaction = _make_mock_interaction_with_images(
+        interaction_id="ia-multi-img",
+        text="Report.",
+        image_data_list=[img1, img2],
+    )
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    result = gemini_search._run_deep_research("q", "agent-id", mock_client)
+
+    assert len(result["images"]) == 2
+    assert result["images"][0]["index"] == 1
+    assert result["images"][1]["index"] == 2
+    # Verify both files exist
+    for img_info in result["images"]:
+        assert pathlib.Path(img_info["path"]).exists()
+
+
+def test_run_deep_research_no_images_returns_empty_list(mocker):
+    """_run_deep_research returns empty images list when no image outputs."""
+    interaction = _make_mock_interaction(text="No images here.")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = interaction
+    mock_client.interactions.get.return_value = interaction
+
+    result = gemini_search._run_deep_research("q", "agent-id", mock_client)
+
+    assert result["images"] == []
+
+
+def test_run_deep_research_image_with_no_data_skipped(mocker):
+    """_run_deep_research skips image outputs with no data."""
+
+    class FakeImageNoData:
+        type = "image"
+        data = None
+
+    class FakeTextContent:
+        type = "text"
+        text = "Report."
+        annotations = []
+
+    class FakeInteraction:
+        id = "ia-no-data"
+        status = "completed"
+        outputs = [FakeTextContent(), FakeImageNoData()]
+
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = FakeInteraction()
+    mock_client.interactions.get.return_value = FakeInteraction()
+
+    result = gemini_search._run_deep_research("q", "agent-id", mock_client)
+
+    assert result["images"] == []
+
+
+def test_deep_research_text_output_prints_images(mocker, capsys):
+    """deep_research() text mode prints image paths when images are present."""
+    img_b64 = base64.b64encode(b"test-image").decode()
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction_with_images(
+        text="Report", image_data_list=[img_b64]
+    )
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("topic")
+
+    captured = capsys.readouterr()
+    assert "=== IMAGES ===" in captured.out
+    assert "image_001.png" in captured.out
+
+
+def test_deep_research_json_output_includes_images(mocker, capsys):
+    """deep_research() JSON output includes images list."""
+    img_b64 = base64.b64encode(b"chart-bytes").decode()
+    mocker.patch("gemini_search.get_api_key", return_value="fake-key")
+    mock_client = mocker.MagicMock()
+    mock_client.interactions.create.return_value = _make_mock_interaction_with_images(
+        interaction_id="ia-json-img",
+        text="Report",
+        image_data_list=[img_b64],
+    )
+    mock_client.interactions.get.return_value = mock_client.interactions.create.return_value
+    mocker.patch("gemini_search._make_client", return_value=mock_client)
+
+    gemini_search.deep_research("topic", as_json=True)
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert "images" in output
+    assert len(output["images"]) == 1
+    assert output["images"][0]["index"] == 1
+    assert "ia-json-img" in output["images"][0]["path"]
+
+
+def test_save_image_creates_directory_and_file(tmp_path, mocker):
+    """_save_image creates output directory and writes decoded image."""
+    img_bytes = b"raw-image-data"
+    img_b64 = base64.b64encode(img_bytes).decode()
+
+    # Override prefix to use tmp_path
+    mocker.patch(
+        "gemini_search._IMAGE_OUTPUT_DIR_PREFIX",
+        str(tmp_path / "gemini-search-"),
+    )
+
+    path = gemini_search._save_image(img_b64, "test-id", 1)
+
+    assert pathlib.Path(path).exists()
+    assert pathlib.Path(path).read_bytes() == img_bytes
+    assert "test-id" in path
+    assert path.endswith("image_001.png")

@@ -13,6 +13,7 @@ wheels/
 .opencode/
 .python-version
 .mise.toml
+reports/
 
 # Local OS files
 .DS_Store

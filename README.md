@@ -54,9 +54,6 @@ uv run gemini_search.py deep-research "query" --json
 # Custom agent (default: deep-research-preview-04-2026)
 uv run gemini_search.py deep-research "query" --agent deep-research-preview-04-2026
 
-# More exhaustive Deep Research agent
-uv run gemini_search.py deep-research "query" --agent deep-research-max-preview-04-2026
-
 # Attach a text file as a research brief (inline prepend)
 uv run gemini_search.py deep-research "conduct research based on this brief" --file ./brief.md
 
@@ -65,9 +62,22 @@ uv run gemini_search.py deep-research "summarize and expand on this report" --fi
 
 # Attach an image (uploaded via Files API)
 uv run gemini_search.py deep-research "research the topic shown in this diagram" --file ./chart.png
+
+# Continue from a prior deep-research run (follow-up question)
+uv run gemini_search.py deep-research "what are the regulatory implications?" --previous-interaction-id ia-abc123
+
+# Use a different model for follow-up Q&A
+uv run gemini_search.py deep-research "summarize section 3" --previous-interaction-id ia-abc123 --followup-model gemini-3-flash-preview
+
+# Disable visualization (charts/graphs) in research output
+uv run gemini_search.py deep-research "query" --no-visualization
 ```
 
 > **Note:** Deep Research is a blocking call that takes **1–3 minutes** to complete. A progress notice is printed to stderr at the start.
+>
+> **Note:** `--previous-interaction-id` switches to a **model-based post-report follow-up** (not another Deep Research agent run). The follow-up uses `gemini-3.1-pro-preview` (or the model specified via `--followup-model`) with `previous_interaction_id` to load the completed report's history — this is the docs-backed continuation contract. Using the Deep Research agent again with a completed interaction ID causes HTTP 400.
+>
+> **Note:** When visualization is enabled (default), the agent may generate charts and graphs as part of the report. Images are saved to `/tmp/gemini-search-<interaction_id>/` and their paths are included in the output.
 
 ## File input — `--file`
 
@@ -76,8 +86,8 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 | File type | `search` | `deep-research` |
 |---|---|---|
 | `.txt`, `.md`, any `text/*` | Supported — inline string prepended to query | Supported — inline string prepended to query |
-| `.pdf` | Supported — inline `Part.from_bytes` multipart | Supported — Files API upload → typed `document` input |
-| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported — Files API upload → typed `image` input |
+| `.pdf` | Supported (up to 20 MB) | Supported — Files API upload |
+| Images (`image/png`, `image/jpeg`, etc.) | Not a primary use case | Supported — Files API upload |
 | Audio, Video | Not a primary use case | Not implemented in CLI (underlying agent supports them; deferred) |
 | Other binary | Not a primary use case | Warning emitted, query runs without file |
 
@@ -85,7 +95,7 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 - `query` remains required even when `--file` is given. The query is the instruction to apply to the file (e.g., "summarize this", "what risks does this identify?").
 - PDF and image inputs for `deep-research` are uploaded to the Gemini Files API (`client.files.upload`), polled until `ACTIVE`, then passed as a typed content list to `client.interactions.create`. No local size limit applies (Files API handles large files).
 - Audio and video are supported by the underlying Deep Research agent API but are not implemented in the CLI (impractical for typical research workflows).
-- Current Google Deep Research capabilities such as collaborative planning, visualization, streaming, follow-up interactions, and richer tool configuration belong to the underlying API surface; this CLI currently exposes the core research flow plus `--agent` and `--file`, not the full API control surface.
+- To ask a follow-up question against a completed Deep Research report, pass `--previous-interaction-id <id>` using the `interaction_id` from a previous run. The follow-up is sent as a **model-based Interactions request** (not another Deep Research agent run) using `model="gemini-3.1-pro-preview"` + `previous_interaction_id`. This is the docs-backed post-report Q&A contract ([ai.google.dev/gemini-api/docs/deep-research](https://ai.google.dev/gemini-api/docs/deep-research#follow-up-questions-and-interactions)). The result includes a new `interaction_id` and a `followup_model` field.
 - File content is context only. The `query` field in JSON output reflects the original query string, not the file content.
 
 ## When to use search vs deep-research
@@ -99,6 +109,7 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 | `--file` text | Supported | Supported |
 | `--file` PDF | Supported (inline multipart) | Supported (Files API upload) |
 | `--file` image | Not a primary use case | Supported (Files API upload) |
+| Visualization | N/A | Charts/graphs saved to `/tmp` (disable with `--no-visualization`) |
 | Cost | Lower | Higher |
 
 ## Output schemas
@@ -115,7 +126,7 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
 }
 ```
 
-### deep-research --json
+### deep-research --json (fresh run)
 
 ```json
 {
@@ -124,15 +135,32 @@ Both modes accept `--file <path>` to attach a local file as context for the quer
   "interaction_id": "...",
   "status": "completed",
   "answer": "...",
-  "sources": [{"title": "...", "url": "..."}]
+  "sources": [{"title": "...", "url": "..."}],
+  "images": [{"path": "/tmp/gemini-search-ia-123/image_001.png", "index": 1}]
 }
 ```
 
+### deep-research --json (with --previous-interaction-id, post-report follow-up)
+
+```json
+{
+  "query": "...",
+  "agent": "deep-research-preview-04-2026",
+  "interaction_id": "...",
+  "status": "completed",
+  "answer": "...",
+  "sources": [{"title": "...", "url": "..."}],
+  "images": [],
+  "previous_interaction_id": "ia-prior-abc123",
+  "followup_model": "gemini-3.1-pro-preview"
+}
+```
+
+The `followup_model` field indicates that the follow-up used a model-based interaction (not the Deep Research agent). The `agent` field still reflects the original Deep Research agent whose report is being followed up on. The `images` array contains paths to saved visualization files (charts, graphs) generated by the agent; it is empty when no visuals were produced or when `--no-visualization` is used.
+
 Note: `search_queries_used` is absent from deep-research output; `interaction_id` and `status` are absent from search output.
 
-Deep Research runs asynchronously under the hood with `background=True` and polls until completion.
-
-Deep Research citations may appear inline in the `answer` text (for example as markdown links), and `sources` can still be empty on some valid runs. This is expected API behavior, not a parsing bug.
+Deep Research citations may appear inline in the `answer` text (as markdown links), and `sources` can be empty on valid runs. This is expected behavior.
 
 ## Agent Skill
 
