@@ -17,3 +17,6 @@ reports/
 
 # Local OS files
 .DS_Store
+
+# Others
+.env

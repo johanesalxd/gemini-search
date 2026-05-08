@@ -107,12 +107,6 @@ def _detect_mime(path: pathlib.Path) -> str:
     return mime or "application/octet-stream"
 
 
-def _is_text_file(path: pathlib.Path) -> bool:
-    """Return True if path is a known text-type file."""
-    mime = _detect_mime(path)
-    return mime.startswith("text/")
-
-
 def _build_search_contents(query: str, file_path: str | None):
     """Build the contents argument for generate_content.
 
@@ -361,10 +355,11 @@ def _run_deep_research(
         is_followup = True
     else:
         # Fresh Deep Research run: agent-based with background execution + polling.
-        # agent_config controls agent behavior (type, visualization, etc.).
+        # agent_config controls agent behavior (type, visualization, thinking, etc.).
         # Docs: ai.google.dev/gemini-api/docs/deep-research#agent-configuration
         agent_config = {
             "type": "deep-research",
+            "thinking_summaries": "auto",
             "visualization": "auto" if visualization else "off",
         }
         create_kwargs = {
@@ -403,86 +398,101 @@ def _run_deep_research(
     answer = ""
     sources = []
     images = []
+    thought_summaries: list[str] = []
     seen_urls: set[str] = set()
     image_index = 0
 
-    for content in interaction.outputs or []:
-        # interaction.outputs contains discriminated-union content items, each
-        # with a `type` field. The two types relevant here are:
-        #   - "text"                 → TextContent: has .text (str) and
-        #                              optional .annotations (citation sources)
-        #   - "google_search_result" → GoogleSearchResultContent: has
-        #                              .result (List[GoogleSearchResult]), each
-        #                              with .title, .url, .rendered_content
-        content_type = getattr(content, "type", None)
+    # SDK v2 (google-genai>=2.0.0) returns interaction.steps instead of
+    # interaction.outputs.  Each step has a `type` discriminator:
+    #   - "thought"       → ThoughtStep: .summary is list[TextContent|ImageContent]
+    #   - "model_output"  → ModelOutputStep: .content is list[Content] where
+    #                        Content = TextContent | ImageContent | ...
+    #   - "user_input"    → UserInputStep (ignored)
+    #   - "google_search_call/result", "url_context_call/result", etc. (ignored)
+    # Source citations come from TextContent.annotations (UrlCitation) inside
+    # ModelOutputStep, not from a separate GoogleSearchResultStep.
+    for step in interaction.steps or []:
+        step_type = getattr(step, "type", None)
 
-        if content_type == "text":
-            # Accumulate the synthesized research report text.
-            text = getattr(content, "text", None)
-            if text:
-                answer += text
-            # TextContent.annotations is documented in the Interactions API
-            # reference (ai.google.dev/api/interactions-api, TextContent section):
-            #   annotations: Annotation (optional) — citation info for model-generated
-            #   content. Polymorphic on `type`. UrlCitation (type="url_citation") has
-            #   .url, .title, .start_index, .end_index. This matches the canonical
-            #   Python handling example in the interactions docs (URL context section):
-            #     for annotation in output.annotations:
-            #         if annotation.get("type") == "url_citation":
-            #             print(annotation["url"])
-            # Deep Research can surface url_citation annotations for cited URLs.
-            # appear in practice. The SDK may deserialize them as dicts or objects
-            # depending on version; handle both defensively.
-            for ann in getattr(content, "annotations", None) or []:
-                # SDK object path
-                ann_type = getattr(ann, "type", None)
-                if ann_type is None and isinstance(ann, dict):
-                    ann_type = ann.get("type")
-                if ann_type == "url_citation":
-                    url = (getattr(ann, "url", None) or
-                           (ann.get("url") if isinstance(ann, dict) else None) or "")
-                    title = (getattr(ann, "title", None) or
-                             (ann.get("title") if isinstance(ann, dict) else None) or url)
-                    if url and url not in seen_urls:
-                        seen_urls.add(url)
-                        sources.append({"title": title, "url": url})
+        if step_type == "thought":
+            # ThoughtStep.summary = list[TextContent | ImageContent].
+            # Collect text fragments for fallback when the report is empty.
+            for item in getattr(step, "summary", None) or []:
+                if getattr(item, "type", None) == "text":
+                    text = getattr(item, "text", None)
+                    if text:
+                        thought_summaries.append(text)
 
-        elif content_type == "image":
-            # Image content from visualization. The agent generates charts/graphs
-            # as base64-encoded image data when visualization="auto".
-            # Docs: ai.google.dev/gemini-api/docs/deep-research#visualization
-            data_b64 = getattr(content, "data", None)
-            if data_b64:
-                image_index += 1
-                try:
-                    saved_path = _save_image(
-                        data_b64, interaction.id, image_index
-                    )
-                    images.append({"path": saved_path, "index": image_index})
-                except Exception as e:
-                    print(
-                        f"WARNING: Failed to save image {image_index}: {e}",
-                        file=sys.stderr,
-                    )
+        elif step_type == "model_output":
+            # ModelOutputStep.content holds the report text and images.
+            for item in getattr(step, "content", None) or []:
+                item_type = getattr(item, "type", None)
 
-        elif content_type == "google_search_result":
-            # Each result item has .title and .url.
-            for result_item in getattr(content, "result", None) or []:
-                url = getattr(result_item, "url", None) or ""
-                title = getattr(result_item, "title", None) or url
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    sources.append({"title": title, "url": url})
+                if item_type == "text":
+                    text = getattr(item, "text", None)
+                    if text:
+                        answer += text
+                    # UrlCitation annotations carry source URLs.
+                    # Docs: ai.google.dev/api/interactions-api (UrlCitation)
+                    for ann in getattr(item, "annotations", None) or []:
+                        ann_type = getattr(ann, "type", None)
+                        if ann_type == "url_citation":
+                            url = getattr(ann, "url", None) or ""
+                            title = getattr(ann, "title", None) or url
+                            if url and url not in seen_urls:
+                                seen_urls.add(url)
+                                sources.append({"title": title, "url": url})
 
+                elif item_type == "image":
+                    # Visualization charts/graphs from the agent.
+                    data_b64 = getattr(item, "data", None)
+                    if data_b64:
+                        image_index += 1
+                        try:
+                            saved_path = _save_image(
+                                data_b64, interaction.id, image_index
+                            )
+                            images.append({
+                                "path": saved_path,
+                                "index": image_index,
+                            })
+                        except Exception as e:
+                            print(
+                                f"WARNING: Failed to save image {image_index}: {e}",
+                                file=sys.stderr,
+                            )
+
+    official_answer = answer.strip()
     result: dict = {
         "query": query,
         "agent": agent,
         "interaction_id": interaction.id,
         "status": interaction.status,
-        "answer": answer.strip(),
+        "answer": official_answer,
         "sources": sources,
         "images": images,
     }
+
+    # Diagnostic fallback: when the interaction completed but the ModelOutputStep
+    # had empty text, surface ThoughtStep summary chunks as a clearly labeled
+    # fallback artifact.  This is NOT the official Deep Research report; it is
+    # planning/reasoning text emitted during the research phase.
+    if not official_answer and thought_summaries:
+        result["empty_answer_diagnostic"] = (
+            "ModelOutputStep text was empty on a completed interaction. "
+            "The official final report is absent. "
+            "fallback_answer contains ThoughtStep summary text collected "
+            "during the research phase and is provided for diagnostic purposes only."
+        )
+        result["fallback_answer"] = "\n\n".join(thought_summaries)
+        result["fallback_answer_source"] = "thought_summary"
+    elif not official_answer:
+        result["empty_answer_diagnostic"] = (
+            "ModelOutputStep text was empty on a completed interaction and no "
+            "ThoughtStep summary chunks were found. The official final "
+            "report is absent."
+        )
+
     if previous_interaction_id:
         result["previous_interaction_id"] = previous_interaction_id
         result["followup_model"] = followup_model
@@ -534,9 +544,31 @@ def deep_research(
     print(f"Status: {result['status']}")
     print(f"Interaction ID: {result['interaction_id']}")
     print()
-    print("=== DEEP RESEARCH REPORT ===")
-    print(result["answer"])
-    print()
+
+    if result.get("answer"):
+        print("=== DEEP RESEARCH REPORT ===")
+        print(result["answer"])
+        print()
+    else:
+        print(
+            "WARNING: Deep Research interaction completed but the official report "
+            "text is empty.",
+            file=sys.stderr,
+        )
+        if result.get("empty_answer_diagnostic"):
+            print(
+                f"DIAGNOSTIC: {result['empty_answer_diagnostic']}",
+                file=sys.stderr,
+            )
+        print("=== DEEP RESEARCH REPORT: EMPTY ===")
+        print("(No official report text was returned by the Deep Research agent.)")
+        print()
+        if result.get("fallback_answer"):
+            print(
+                "=== FALLBACK (thought summaries — NOT the official report) ==="
+            )
+            print(result["fallback_answer"])
+            print()
     if result.get("images"):
         print("=== IMAGES ===")
         for img in result["images"]:
