@@ -7,7 +7,7 @@ description: "Google Search via Gemini in two modes. Use `search` for fast groun
 
 Google-backed research CLI with two distinct modes:
 - **`search`** — fast grounded synthesis (typically 15-25 s)
-- **`deep-research`** — multi-step research report (typically 1-3 min)
+- **`deep-research`** — multi-step research report (typically 1-5 min, up to 15 min)
 
 Use this skill when you specifically want the local `gemini_search.py` CLI behavior rather than a generic search tool.
 
@@ -50,7 +50,7 @@ uv run gemini_search.py deep-research "summarize section 3" --previous-interacti
 uv run gemini_search.py deep-research "query" --no-visualization
 ```
 
-A progress notice is printed to stderr. Deep Research is blocking and may take up to a few minutes.
+A progress notice is printed to stderr. Deep Research is blocking and typically takes 1-5 minutes but can take up to 15 minutes for complex queries.
 
 ## File input — `--file`
 
@@ -71,6 +71,7 @@ Both modes accept `--file <path>` to attach local context.
 - `search --json` returns: `query`, `model`, `search_queries_used`, `answer`, `sources`
 - `deep-research --json` returns: `query`, `agent`, `interaction_id`, `status`, `answer`, `sources`, and optionally `images`
 - when `--previous-interaction-id` is used, deep-research output also includes `previous_interaction_id` and `followup_model`
+- when `answer` is empty on a completed run, output may also include `empty_answer_diagnostic`, `fallback_answer` (from thought summaries), and `fallback_answer_source`
 
 Do not assume `search` and `deep-research` share the same schema.
 
@@ -81,15 +82,21 @@ Do not assume `search` and `deep-research` share the same schema.
 - **`deep-research`: `--raw-urls` is not supported.** It warns and is ignored.
 - **`deep-research`: `--model` is not the control knob for the research run.** Use `--agent` for the fresh run and `--followup-model` for post-report follow-up.
 - **`deep-research`: fresh run and follow-up are different paths.** Fresh research uses the Deep Research agent; `--previous-interaction-id` triggers a model-based follow-up interaction against a completed report.
-- **`deep-research`: post-report follow-up continuity is currently blocked by live API behavior.** The CLI enters the expected model-based follow-up path, but real runs can still fail with HTTP 400 `invalid_request`. In some observed responses, the backend includes opaque internal error identifiers such as `Unsupported input part type: go/debugstr` or `go/debugproto`; these are not user-meaningful input types. Treat `--previous-interaction-id` as experimental until the upstream API behavior stabilizes.
+- **`deep-research`: post-report follow-up may fail.** The CLI enters the expected model-based follow-up path, but real runs can fail with HTTP 400 `invalid_request`. Treat `--previous-interaction-id` as experimental.
 - **`deep-research`: visualization is on by default.** Generated charts/graphs are saved under `/tmp/gemini-search-<interaction_id>/` as PNG files. Use `--no-visualization` to disable.
+- **`deep-research`: source titles may be `None`.** Unlike `search`, Deep Research `url_citation` annotations often lack titles. The URL (a vertexaisearch redirect) is used as fallback.
+- **`deep-research`: the report can be empty on completed runs.** When this happens, `answer` is `""` and thought summaries are surfaced in `fallback_answer` for diagnostic purposes. Check `empty_answer_diagnostic` in JSON output.
 - **`deep-research`: citations may be embedded in `answer`.** `sources` can be empty on valid runs.
-- **Deep Research is preview/experimental.** Agent IDs and response details may drift with SDK/API changes.
+- **`deep-research`: only `deep-research-preview-04-2026` is supported.** The max variant (`deep-research-max-preview-04-2026`) is not tested. The `--agent` flag allows overriding but other agents are untested.
+- **`deep-research`: runs can hang indefinitely.** The server-side agent occasionally gets stuck in `in_progress`. If a run exceeds 15 minutes, treat it as hung.
+- **Deep Research is preview/experimental.** Uses SDK v2 (`google-genai>=2.0.0`) with `interaction.steps` response structure. Agent IDs and response details may drift with API changes.
 
 ## Operational guidance
 
 Recommended timeout headroom:
 - `search` -> about 30 s
-- `deep-research` -> about 180 s
+- `deep-research` -> about 900 s (15 min); typical runs complete in 1-5 min.
+  If the CLI has not returned after 15 min, the run is likely hung server-side.
+  The CLI does not enforce a timeout; callers should implement their own.
 
 If this skill grows materially larger later, keep `SKILL.md` focused on triggering and operation, and move bulky reference detail out instead of duplicating the full README.

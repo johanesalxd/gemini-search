@@ -1,6 +1,5 @@
 """Tests for CLI dispatch via main()."""
 
-import sys
 import pytest
 
 import gemini_search

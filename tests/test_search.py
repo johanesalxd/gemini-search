@@ -1,7 +1,6 @@
 """Tests for the search path: _run_search(), _build_search_contents(), and search() output modes."""
 
 import json
-import pathlib
 
 import pytest
 
